@@ -86,7 +86,7 @@ static inline Class preferredByteArrayClass(void) {
 }
 
 + (CGFloat)binaryTemplateDefaultWidth {
-    return 250;
+    return 325;
 }
 
 /* Register the default-defaults for this class. */
