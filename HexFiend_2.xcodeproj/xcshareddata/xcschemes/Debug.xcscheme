@@ -15,7 +15,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "8D1107260486CEB800E47090"
-               BuildableName = "Hex Fiend.app"
+               BuildableName = "MYGH Hex Fiend.app"
                BlueprintName = "HexFiend_2"
                ReferencedContainer = "container:HexFiend_2.xcodeproj">
             </BuildableReference>
@@ -47,7 +47,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "8D1107260486CEB800E47090"
-            BuildableName = "Hex Fiend.app"
+            BuildableName = "MYGH Hex Fiend.app"
             BlueprintName = "HexFiend_2"
             ReferencedContainer = "container:HexFiend_2.xcodeproj">
          </BuildableReference>
@@ -108,7 +108,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "8D1107260486CEB800E47090"
-            BuildableName = "Hex Fiend.app"
+            BuildableName = "MYGH Hex Fiend.app"
             BlueprintName = "HexFiend_2"
             ReferencedContainer = "container:HexFiend_2.xcodeproj">
          </BuildableReference>
