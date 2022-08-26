@@ -426,7 +426,7 @@
 		795F46C014BAA45D00EB2F7D /* OpenDriveWindowController.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = OpenDriveWindowController.m; path = app/sources/OpenDriveWindowController.m; sourceTree = "<group>"; };
 		795F46C214BAADB600EB2F7D /* DiskArbitration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = DiskArbitration.framework; path = System/Library/Frameworks/DiskArbitration.framework; sourceTree = SDKROOT; };
 		79E2FF1F1745A2B300FA8F12 /* dsa_pub.pem */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; name = dsa_pub.pem; path = app/resources/dsa_pub.pem; sourceTree = "<group>"; };
-		8D1107320486CEB800E47090 /* Hex Fiend.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Hex Fiend.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		8D1107320486CEB800E47090 /* MYGH Hex Fiend.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "MYGH Hex Fiend.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		9408FBFA19DD72DE004F800E /* HexFiend_Framework Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "HexFiend_Framework Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		9408FBFD19DD72DE004F800E /* Framework_Tests-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Framework_Tests-Info.plist"; sourceTree = "<group>"; };
 		9408FBFE19DD72DF004F800E /* Framework_Tests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Framework_Tests.m; sourceTree = "<group>"; };
@@ -774,7 +774,7 @@
 		19C28FACFE9D520D11CA2CBB /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				8D1107320486CEB800E47090 /* Hex Fiend.app */,
+				8D1107320486CEB800E47090 /* MYGH Hex Fiend.app */,
 				D01E7BB80CDC530C00943F9E /* HexFiend.framework */,
 				D00C15E50FF091FF006D021F /* HexFiendling.app */,
 				D047E3151022CEFE00EF307B /* com.ridiculousfish.HexFiend.PrivilegedHelper */,
@@ -1525,7 +1525,7 @@
 			);
 			productInstallPath = "$(HOME)/Applications";
 			productName = HexFiend_2;
-			productReference = 8D1107320486CEB800E47090 /* Hex Fiend.app */;
+			productReference = 8D1107320486CEB800E47090 /* MYGH Hex Fiend.app */;
 			productType = "com.apple.product-type.application";
 		};
 		9408FBF919DD72DE004F800E /* HexFiend_Framework Tests */ = {
@@ -2782,7 +2782,7 @@
 					Sparkle,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.ridiculousfish.HexFiend;
-				PRODUCT_NAME = "Hex Fiend";
+				PRODUCT_NAME = "MYGH Hex Fiend";
 				WRAPPER_EXTENSION = app;
 			};
 			name = Release;
@@ -3832,7 +3832,7 @@
 					Sparkle,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.ridiculousfish.HexFiend;
-				PRODUCT_NAME = "Hex Fiend";
+				PRODUCT_NAME = "MYGH Hex Fiend";
 				WRAPPER_EXTENSION = app;
 			};
 			name = Debug;
