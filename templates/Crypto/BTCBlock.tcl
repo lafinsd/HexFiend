@@ -1,9 +1,9 @@
 # Bitcoin Core Block
-#   Process a single Bitcoin block contained in a Bitcoin Core blk*.dat file. 
+#   Process a single Bitcoin block contained in a Bitcoin Core blk*.dat file.
 #
 
 
-# Return a BTC varint value. Presence of an argument causes the varint to be displayed as a Hex Fiend 
+# Return a BTC varint value. Presence of an argument causes the varint to be displayed as a Hex Fiend
 # field with the argument as the label. The file pointer is left at the first byte past the varint field.
 proc getVarint {args} {
   
@@ -71,7 +71,7 @@ section -collapsed "TX COUNT $blockTxnum"  {
     section -collapsed "Transaction $tx" {
       uint32 -hex "Tx version"
   
-      # if next varint is 0 then we've read a (single byte) marker and it's a SegWit transaction. 
+      # if next varint is 0 then we've read a (single byte) marker and it's a SegWit transaction.
       # if the varint is non-zero it's the actual number of inputs
       set nInputs [getVarint]
       if {$nInputs == 0} {
@@ -91,25 +91,25 @@ section -collapsed "TX COUNT $blockTxnum"  {
       
       # process the inputs
       section -collapsed "INPUT COUNT $nInputs"  {
-        for {set k 0} {$k < $nInputs} {incr k} {  
+        for {set k 0} {$k < $nInputs} {incr k} {
           section "Input $k" {
             bytes 32  "UTXO"
             uint32    "index"
   
-            set nscriptbytes [getVarint "unlock script len"]
+            set nscriptbytes [getVarint "ScriptSig len"]
             if {$nscriptbytes > 0} {
               # if it's the Coinbase transaction and the first script byte is 0x3
               # then the next 3 bytes are the block height. must be 1st transaction
               # and 1st input
               set bheight [uint8]
-              if {$tx == 0 && $k == 0 && $bheight == 3} { 
+              if {$tx == 0 && $k == 0 && $bheight == 3} {
                 uint24 "height"
-                move -3 
+                move -3
               }
-              # move back to beginning of script 
+              # move back to beginning of script
               move -1
-              bytes $nscriptbytes "unlock script"
-            } 
+              bytes $nscriptbytes "ScriptSig"
+            }
 
             uint32 -hex "Sequence"
           }
@@ -124,8 +124,8 @@ section -collapsed "TX COUNT $blockTxnum"  {
         for {set k 0} {$k < $nOutputs} {incr k} {
           section "Output $k" {
             uint64 "Satoshi"
-            set nscriptbytes [getVarint "lock script len"]
-            bytes $nscriptbytes "lock script"
+            set nscriptbytes [getVarint "ScriptPubKey len"]
+            bytes $nscriptbytes "ScriptPubKey"
           }
         }
       }
@@ -147,8 +147,8 @@ section -collapsed "TX COUNT $blockTxnum"  {
                     bytes 1 "item [expr $l + 1]: 0 bytes"
                   }
                 } ; # for each stack item
-              }   ; # Section stack items   
-            }     ; # Section Witness input   
+              }   ; # Section stack items
+            }     ; # Section Witness input
           }       ; # for each input
         }         ; # Section Witness data
       }           ; # process Segwit data
