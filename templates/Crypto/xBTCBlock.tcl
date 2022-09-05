@@ -34,6 +34,22 @@ proc getVarint {args} {
 
     return $val
 }
+
+proc isPubKey {} {
+  set klen [uint8]
+  set op [uint8]
+  move -2
+  
+  if {$klen != 0x21} {
+    return 0
+  }
+
+  if {$op != 2 && $op != 3} {
+    return 0
+  }
+  return 1
+}
+
 proc decodePubKey {len} {
   bytes $len "PubKey"
   return 1
@@ -41,7 +57,11 @@ proc decodePubKey {len} {
 
 proc decodeMultiSig {} {
   set OP_ [expr {[uint8] - 80} ]
-  section -collapsed "Multisig" {
+  if {![isPubKey]} {
+    move -1
+    return 0
+  }
+  section -collapsed "m of n Multisig PubKeys" {
     move -1
     uint8 "m  (OP_$OP_)"
     set sigs 1
@@ -92,6 +112,52 @@ proc decodeSig {} {
   return 1
 }
 
+proc isSignature {len}  {
+  set curpos 0
+  set DER [uint8]
+  incr curpos
+  if {$DER != 0x30} {
+    move -$curpos
+    return 0
+  }
+  
+  set slen [uint8]
+  incr curpos
+  if {[expr {$slen + 3}] != $len} {
+    move -$curpos
+    return 0
+  }
+  
+  for {set i 0} {$i < 2} {incr i} {
+    set intmrk [uint8]
+    incr curpos
+    if {$intmrk != 2} {
+      move -$curpos
+      return 0
+    }
+  
+    set pslen [uint8]
+    incr curpos
+    if {[expr {$pslen + $curpos}] > $len} {
+      move -$curpos
+      return 0
+    }
+  
+    move $pslen
+    incr curpos $pslen
+  }
+  
+  set sighash [uint8]
+  incr curpos
+  move -$curpos
+  
+  if {$curpos != $len} {
+    return 0
+  }
+  
+  return 1
+}
+
 proc witnessType {len} {
   if {$len == 0} {
     set type "<null>"
@@ -101,6 +167,11 @@ proc witnessType {len} {
 
     if {$op == 0x30 && $len >= 67 &&  $len <= 73} {
       set type "wtDER"
+      set rv [isSignature $len]
+      if {$rv == 0} {
+        set type "wtbadDER"
+      }
+      entry "isSig rv " $rv
     } elseif {$op >= 0x51 && $op <= 0x60 && $len != 32} {
       set type "wtOP_"
     } elseif {$len == 33 && ($op == 2  ||  $op == 3)} {
@@ -114,7 +185,6 @@ proc witnessType {len} {
 
 # BTC Magic is 4 bytes (0xF9BEB4D9) but it is more convenient to treat the 4 bytes as a little endian uint32.
 set BTCMagic 0xD9B4BEF9
-
 
 # Block Magic sanity check
 if {[uint32] != $BTCMagic} {
@@ -150,8 +220,7 @@ set blockTxnum [getVarint]
 # There may be hundreds of transactions. Make a collapsed section to keep the overview initially brief.
 section -collapsed "TX COUNT $blockTxnum"  {
   for {set tx 0} {$tx < $blockTxnum} {incr tx} {
-    section -collapsed "Transaction $tx at [pos]" {
-#if {$tx == 1490} {return}      
+    section -collapsed "Transaction $tx at [pos]" {     
       set aScriptSigNotZero 0
       uint32 -hex "Tx version"
   
@@ -165,6 +234,7 @@ section -collapsed "TX COUNT $blockTxnum"  {
         set scriptsiglens {}
         set versionbyte {}
         set lengthbyte {}
+        set scriptsigpos {}
   
         # call out marker and flag byte
         move -1
@@ -242,7 +312,10 @@ for {set k 0} {$k < $nInputs} {incr k} {
           section "Output $k" {
             uint64 "Satoshi"
             set nscriptbytes [getVarint "ScriptPubKey len"]
-if {$nscriptbytes == 0} {return}
+if {$nscriptbytes <= 0} {
+  entry "output nscriptbytes is bogus"  $nscriptbytes
+  return
+}
             bytes $nscriptbytes "ScriptPubKey"
 
           }
@@ -260,22 +333,22 @@ if {$nscriptbytes == 0} {return}
                 for {set l 0} {$l < $nwitstack} {incr l} {
                   set nscriptbytes [getVarint]
                   set wType [witnessType $nscriptbytes]
-if {$tx == 1505 && $l == 0 && $k == 2} {
-                    entry "entry nsb" $nscriptbytes
-                    entry "entry wType" $wType
-                    return
-}
-set parse 1
-if {($tx != 0) && $parse} {                  
+              
                   switch $wType {
+                    "wtbadDER" {
+                      entry "short sig fails" $l
+                      return
+                    }
                     "wtDER" {
                       if {![decodeSig]} {
                         return
                       }
+                      #return
                     }
                     "wtOP_" {
                       if {![decodeMultiSig]} {
-                        return
+                        bytes $nscriptbytes "item [expr $l + 1] $nscriptbytes bytes"
+                        # return
                       }
                     }
                     "wtPK" {
@@ -288,23 +361,18 @@ if {($tx != 0) && $parse} {
                       uint8 "<null>" 
                     }
                     "wtIDK" {
-                      if {$nscriptbytes > 400} {
-                        entry "nsb too big" $nscriptbytes
-                        return
-                      }
-                      bytes $nscriptbytes "item [expr $l + 1]"
-                      #return
+if {$nscriptbytes > 400} {
+  entry "nsb too big" $nscriptbytes
+  return
+}
+                      bytes $nscriptbytes "item [expr $l + 1] $nscriptbytes bytes"
                     }
                     default {
                       entry "unknown witness data type" $wType
                       return
                     }
                   }
-} else {                    
-                  if {$nscriptbytes > 0} {
-                      bytes $nscriptbytes "item [expr $l + 1]"
-                  } 
-}
+
                 } ; # for each stack item
               }   ; # Section stack items   
             }     ; # Section Witness input   
@@ -312,7 +380,7 @@ if {($tx != 0) && $parse} {
         }         ; # Section Witness data
       }           ; # process Segwit data
 
-      uint32 "nLockTimee"
+      uint32 "nLockTime"
 
     } ; # Section single transaction
   } ; # for each transaction
