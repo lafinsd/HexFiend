@@ -35,15 +35,15 @@ proc getVarint {args} {
     return $val
 }
 
-# Bitcoin Magic is 4 bytes (0xF9BEB4D9). Used as separator when storing Blocks and in the network messaging protocol 
-set BTCMagic "F9 BE B4 D9"
+# BTC Magic is 4 bytes (0xF9BEB4D9) but it is more convenient to treat the 4 bytes as a little endian uint32.
+set BTCMagic 0xD9B4BEF9
 
-requires 0 $BTCMagic
 
-# Display the block metadata
-bytes  4 "Magic"
-uint32   "Block length"
-
+# Block Magic sanity check
+if {[uint32] != $BTCMagic} {
+  move -4
+  error "[format "Bad Magic %4X" [hex 4] ]"
+}
 
 # Display the block metadata
 move  -4
