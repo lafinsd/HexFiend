@@ -113,6 +113,7 @@ proc decodeSig {} {
 }
 
 proc isSignature {len}  {
+
   set curpos 0
   set DER [uint8]
   incr curpos
@@ -160,7 +161,7 @@ proc isSignature {len}  {
 
 proc witnessType {len} {
   if {$len == 0} {
-    set type "<null>"
+    set type "wtOP_0"
   } else {
     set op [uint8]
     move -1
@@ -171,7 +172,7 @@ proc witnessType {len} {
       if {$rv == 0} {
         set type "wtbadDER"
       }
-      entry "isSig rv " $rv
+#      entry "isSig rv " $rv
     } elseif {$op >= 0x51 && $op <= 0x60 && $len != 32} {
       set type "wtOP_"
     } elseif {$len == 33 && ($op == 2  ||  $op == 3)} {
@@ -183,21 +184,137 @@ proc witnessType {len} {
   return $type
 }
 
+
+proc isTarget {Target} {
+  # target string
+  entry "target" $Target
+  
+  set slen [string length $Target]
+  entry "slen" $slen
+  
+  if {$slen % 2} {return 0}
+
+ # Target literal string must be prefixed with "0x" because the Hex Fiend hex read will prefix read result with an 0x
+ set strTarget "0x"
+ append strTarget $Target
+ entry "appended target" $strTarget
+ 
+ # read the test data
+  set strTest [hex [expr {$slen/2}]]
+  entry "test" $strTest
+
+  # here's the actual test
+  if {$strTest == $strTarget} {
+    set retval 1
+  } else {
+    set retval 0
+  }
+
+  entry "isTarget retval" $retval
+  return $retval
+}
+
+proc getOP_CODE {string idx} {
+
+if {1} {  
+  set ncodes { \
+          "00" \
+          "4C" \
+          "4D" \
+          "4E" \
+          "6A" \
+          "76" \
+          "88" \
+          "87" \
+          "A9" \
+          "AC" \ 
+          "AE" \   
+       }
+       
+  set mcodes { \
+          "OP_0" \
+          "OP_PUSHDATA1" \
+          "OP_PUSHDATA2" \
+          "OP_PUSHDATA4" \
+          "OP_RETURN" \
+          "OP_DUP" \
+          "OP_EQUALVERIFY" \
+          "OP_EQUAL" \
+          "OP_HASH160" \
+          "OP_CHECKSIG" \    
+          "OP_CHECKMULTISIG" \
+       }
+       
+  set retval "OP_IDK"
+  set auxval 0
+  
+  set opcode [string index $string $idx][string index $string [incr idx]]
+  scan $opcode %x numericOC
+ 
+  if {$numericOC > 0  &&  $numericOC < 76} {
+    set retval "OP_PUSH"
+    set auxval $numericOC
+  } elseif {$numericOC > 80  &&  $numericOC < 97} {
+    set retval "OP_[]"
+    set auxval [expr {$numericOC - 80}]
+  } else {
+    set indx [lsearch $ncodes $opcode]
+    if {$indx >= 0} {
+      set retval [lindex $mcodes $indx]
+    }
+  }
+  
+  if {$retval == "OP_PUSHDATA1"} {
+    incr idx 
+    set opcode [string index $string $idx][string index $string [incr idx]]
+    scan $opcode %x numericOC
+    set auxval $numericOC
+  }
+  
+  return [list $retval $auxval]
+}
+}
+
+proc parseSPK {len script}  {
+#  entry "slen" $len
+#  entry "SPK" $script
+  set pos [expr $len * 2 + 2]
+if {1} {  
+  for {set i 2} {$i < $pos} {incr i 2} {
+    set opcode [getOP_CODE $script $i]
+    entry "opcode" $opcode
+    lassign $opcode cmd auxval
+    if {$cmd == "OP_IDK"} {return 0}
+    if {$cmd == "OP_PUSH"} {
+      # skip over the bytes pushed
+      incr i [expr $auxval*2]
+    }
+    if {$cmd == "OP_PUSHDATA1"} {
+      # skip over the nyte count and the bytes pushed
+      incr i [expr $auxval*2 + 2]
+    }
+  }
+}
+ return 1
+}
+
+
+# *********************************************************************************************************************
+
+
 # BTC Magic is 4 bytes (0xF9BEB4D9) but it is more convenient to treat the 4 bytes as a little endian uint32.
 set BTCMagic 0xD9B4BEF9
 
 # Block Magic sanity check
 if {[uint32] != $BTCMagic} {
   move -4
-  set cur [pos]
-  error "[format "Bad Magic %4X at %d (0x%X)" [hex 4] $cur $cur ]"
+  error "[format "Bad Magic %4X" [hex 4] ]"
 }
 
 # Display the block metadata
 move  -4
 bytes  4 "Magic"
 uint32   "Block length"
-
 
 # Process actual block data
 section "Block header" {
@@ -209,19 +326,15 @@ section "Block header" {
   uint32      "nonce"
 }
 
-list scriptsiglens
-list versionbyte
-list lengthbyte
-list scriptsigpos
-
 # get the number of transactions for the block
 set blockTxnum [getVarint]
 
 # There may be hundreds of transactions. Make a collapsed section to keep the overview initially brief.
 section -collapsed "TX COUNT $blockTxnum"  {
   for {set tx 0} {$tx < $blockTxnum} {incr tx} {
-    section -collapsed "Transaction $tx at [pos]" {     
+    section -collapsed "Transaction $tx" {     
       set aScriptSigNotZero 0
+
       uint32 -hex "Tx version"
   
       # if next varint is 0 then we've read a (single byte) marker and it's a SegWit transaction. 
@@ -230,11 +343,6 @@ section -collapsed "TX COUNT $blockTxnum"  {
       if {$nInputs == 0} {
         # it's the marker and this is a SegWit transaction. read witness data later.
         set segwit 1
-        # reset lists used for SegWit
-        set scriptsiglens {}
-        set versionbyte {}
-        set lengthbyte {}
-        set scriptsigpos {}
   
         # call out marker and flag byte
         move -1
@@ -256,12 +364,6 @@ section -collapsed "TX COUNT $blockTxnum"  {
             bytes 32  "UTXO"
             uint32    "index"
             set nscriptbytes [getVarint "ScriptSig len"]
-            
-            if {$segwit} {
-              lappend scriptsiglens $nscriptbytes
-              lappend scriptsigpos [pos]
-            }
-            
             if {$nscriptbytes > 0} {
               incr aScriptSigNotZero
               # if it's the Coinbase transaction and the first script byte is 0x3
@@ -271,38 +373,20 @@ section -collapsed "TX COUNT $blockTxnum"  {
               if {$tx == 0 && $k == 0 && $bheight == 3} { 
                 uint24 "height"
                 move -3 
-              } else {
-                # if this is SegWit this could be a version byte with a length byte to follow
-                if {$segwit} {
-                  lappend versionbyte [uint8]
-                  lappend lengthbyte [uint8]
-                  move -2              
-                }
-              }
+              } 
               # move back to beginning of script 
               move -1
               bytes $nscriptbytes "ScriptSig"
-            } else {
-              if {$segwit} {
-                lappend versionbyte ""
-                lappend lengthbyte ""
-              }
-            }
+              move -$nscriptbytes
+              set idSPK [hex $nscriptbytes]
+              if {![parseSPK $nscriptbytes $idSPK]} {return}
+            } 
 
             uint32 -hex "nSequence"
           }
         }
       }  
       
-if {0 && $segwit} {
-entry "list len" [llength $scriptsiglens]      
-for {set k 0} {$k < $nInputs} {incr k} {
-  entry "ScriptSig length" [lindex $scriptsiglens $k]
-  entry "Version " [lindex $versionbyte $k]
-  entry "script length" [lindex $lengthbyte $k]
-  entry "scriptsig pos" [lindex $scripsigpos $k]
-}
-}
       # outputs
       set nOutputs [getVarint]
       
@@ -311,13 +395,19 @@ for {set k 0} {$k < $nInputs} {incr k} {
         for {set k 0} {$k < $nOutputs} {incr k} {
           section "Output $k" {
             uint64 "Satoshi"
+            move -8
+            set numSats [uint64]
             set nscriptbytes [getVarint "ScriptPubKey len"]
 if {$nscriptbytes <= 0} {
   entry "output nscriptbytes is bogus"  $nscriptbytes
   return
 }
             bytes $nscriptbytes "ScriptPubKey"
-
+#if {1 && $k == 0 && $tx == 64} {
+            move -$nscriptbytes
+            set idSPK [hex $nscriptbytes]
+            if {![parseSPK $nscriptbytes $idSPK]} {return}
+#}
           }
         }
       }
@@ -343,7 +433,6 @@ if {$nscriptbytes <= 0} {
                       if {![decodeSig]} {
                         return
                       }
-                      #return
                     }
                     "wtOP_" {
                       if {![decodeMultiSig]} {
@@ -356,9 +445,9 @@ if {$nscriptbytes <= 0} {
                         return
                       }
                     }
-                    "<null>" {
+                    "wtOP_0" {
                       move -1
-                      uint8 "<null>" 
+                      uint8 "OP_0" 
                     }
                     "wtIDK" {
 if {$nscriptbytes > 400} {
@@ -381,7 +470,7 @@ if {$nscriptbytes > 400} {
       }           ; # process Segwit data
 
       uint32 "nLockTime"
-
+      
     } ; # Section single transaction
   } ; # for each transaction
 } ; # Section all transactions
