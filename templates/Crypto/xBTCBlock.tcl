@@ -39,19 +39,35 @@ proc isPubKey {} {
   set klen [uint8]
   set op [uint8]
   move -2
+  set retval 1
   
-  if {$klen != 0x21} {
-    return 0
+  if {$klen == 0x21} {
+    # compressed key?
+    if {$op != 2 && $op != 3} {
+      set retval 0
+    }
+  } elseif {$klen == 0x41} {
+    # uncompressed key?
+    if {$op != 4} {
+      set retval 0
+    }
+  } else {
+    set retval 0
   }
-
-  if {$op != 2 && $op != 3} {
-    return 0
-  }
-  return 1
+  
+  return $retval
 }
 
 proc decodePubKey {len} {
-  bytes $len "PubKey"
+  
+  if {$len == 33} {
+    bytes $len "Compressed PubKey"
+  } elseif {$len == 65} {
+    bytes $len "Uncompressed PubKey"
+  } else {
+    bytes $len "PubKey"
+  }
+  
   return 1
 }
 
@@ -67,7 +83,7 @@ proc decodeMultiSig {} {
     set sigs 1
     while {$sigs} {
       set len [uint8]
-      if {$len == 33} {
+      if {$len == 33 || $len == 65} {
         decodePubKey $len
       } else {
         move -1
@@ -159,6 +175,7 @@ proc isSignature {len}  {
   return 1
 }
 
+# this proc leaves the file pointer at the byte after the length spec.
 proc witnessType {len} {
   if {$len == 0} {
     set type "wtOP_0"
@@ -176,11 +193,14 @@ proc witnessType {len} {
     } elseif {$op >= 0x51 && $op <= 0x60 && $len != 32} {
       set type "wtOP_"
     } elseif {$len == 33 && ($op == 2  ||  $op == 3)} {
-      set type "wtPK"
+      set type "wtcPK"
+    } elseif {$len == 65 && $op == 4} {
+      set type "wtuPK"
     } else {
       set type "wtIDK"
     }
   }
+  entry "wType" $type
   return $type
 }
 
@@ -216,7 +236,6 @@ proc isTarget {Target} {
 
 proc getOP_CODE {string idx} {
 
-if {1} {  
   set ncodes { \
           "00" \
           "4C" \
@@ -245,59 +264,103 @@ if {1} {
           "OP_CHECKMULTISIG" \
        }
        
-  set retval "OP_IDK"
-  set auxval 0
+  set retval  "OP_IDK"
+  set auxval1 0
+  set auxval2 0
   
   set opcode [string index $string $idx][string index $string [incr idx]]
   scan $opcode %x numericOC
  
   if {$numericOC > 0  &&  $numericOC < 76} {
     set retval "OP_PUSH"
-    set auxval $numericOC
+    set auxval1 $numericOC
+    set auxval2 [expr $idx/2]
   } elseif {$numericOC > 80  &&  $numericOC < 97} {
     set retval "OP_[]"
-    set auxval [expr {$numericOC - 80}]
+    set auxval1 [expr {$numericOC - 80}]
+    set auxval2 [expr $idx/2]
   } else {
     set indx [lsearch $ncodes $opcode]
     if {$indx >= 0} {
       set retval [lindex $mcodes $indx]
     }
+    set auxval2 [expr $idx/2]
   }
   
   if {$retval == "OP_PUSHDATA1"} {
     incr idx 
     set opcode [string index $string $idx][string index $string [incr idx]]
     scan $opcode %x numericOC
-    set auxval $numericOC
+    set auxval1 $numericOC
+    set auxval2 [expr $idx/2]
   }
   
-  return [list $retval $auxval]
-}
+  if {$retval == "OP_IDK"} {
+    set auxval1 $opcode
+    set auxval2 [expr ($idx - 1)/2]
+    set auxval2 [expr $idx/2]
+  }
+  
+  return [list $retval $auxval1 $auxval2]
 }
 
-proc parseSPK {len script}  {
-#  entry "slen" $len
-#  entry "SPK" $script
+proc parseScript {len script}  {
+  
   set pos [expr $len * 2 + 2]
-if {1} {  
-  for {set i 2} {$i < $pos} {incr i 2} {
-    set opcode [getOP_CODE $script $i]
-    entry "opcode" $opcode
-    lassign $opcode cmd auxval
-    if {$cmd == "OP_IDK"} {return 0}
-    if {$cmd == "OP_PUSH"} {
-      # skip over the bytes pushed
-      incr i [expr $auxval*2]
+  set opcode {}
+  set tmplist {}
+  
+    for {set i 2} {$i < $pos} {incr i 2} {
+      set opcode [getOP_CODE $script $i]
+      lassign $opcode cmd auxval1 auxval2
+      lappend tmplist $opcode
+    
+      if {$cmd == "OP_IDK"} {return $tmplist}
+      if {$cmd == "OP_PUSH"} {
+        # skip over the bytes pushed
+        incr i [expr $auxval1*2]
+      }
+      if {$cmd == "OP_PUSHDATA1"} {
+        # skip over the byte count and the bytes pushed
+        incr i [expr $auxval1*2 + 2]
+      }
     }
-    if {$cmd == "OP_PUSHDATA1"} {
-      # skip over the nyte count and the bytes pushed
-      incr i [expr $auxval*2 + 2]
+
+    return $tmplist
+}
+
+proc decodeParse {opcodes len} {
+
+  move -$len
+  section "OP_Decode" {
+    for {set i 0} {$i < [llength $opcodes]} {incr i} {
+      set cur [lindex $opcodes $i]
+      lassign $cur code a1 a2
+      set ostr $code
+      
+      if {$code == "OP_"} {
+        set ostr $code$a1
+        uint8 $ostr
+      } elseif {$code == "OP_PUSHDATA1"} {
+        uint8 $ostr
+        uint8 "push"
+        bytes $a1 "<stack>"
+      } elseif {$code == "OP_PUSH"} {
+        uint8 $ostr
+        bytes $a1 "<stack>"
+      } elseif {$code == "OP_IDK"} {
+        entry "Opcode" $cur
+        return 0
+      } else {
+        uint8 $ostr
+      }
+#      entry "Opcode" $ostr
+#      entry "full Opcode" $cur
     }
   }
+  
+  return 1
 }
- return 1
-}
-
 
 # *********************************************************************************************************************
 
@@ -333,7 +396,12 @@ set blockTxnum [getVarint]
 section -collapsed "TX COUNT $blockTxnum"  {
   for {set tx 0} {$tx < $blockTxnum} {incr tx} {
     section -collapsed "Transaction $tx" {     
-      set aScriptSigNotZero 0
+      set ScriptSigOpcodes {}
+      set ScriptPubKeyOpcodes {}
+      set WitnessOpcodes {}
+      set ScriptSigOpcodesArray {}
+      set ScriptPubKeyOpcodesArray {}
+      set WitnessOpcodesArray {}
 
       uint32 -hex "Tx version"
   
@@ -356,7 +424,6 @@ section -collapsed "TX COUNT $blockTxnum"  {
         set segwit 0
       }
       
-      set aScriptSigNotZero 0
       # process the inputs.
       section -collapsed "INPUT COUNT $nInputs"  {
         for {set k 0} {$k < $nInputs} {incr k} {  
@@ -365,7 +432,6 @@ section -collapsed "TX COUNT $blockTxnum"  {
             uint32    "index"
             set nscriptbytes [getVarint "ScriptSig len"]
             if {$nscriptbytes > 0} {
-              incr aScriptSigNotZero
               # if it's the Coinbase transaction and the first script byte is 0x3
               # then the next 3 bytes are the block height. must be 1st transaction
               # and 1st input
@@ -377,16 +443,23 @@ section -collapsed "TX COUNT $blockTxnum"  {
               # move back to beginning of script 
               move -1
               bytes $nscriptbytes "ScriptSig"
-              move -$nscriptbytes
-              set idSPK [hex $nscriptbytes]
-              if {![parseSPK $nscriptbytes $idSPK]} {return}
-            } 
+              if {$tx != 0  ||  $k != 0} {
+                move -$nscriptbytes
+                set idSPK [hex $nscriptbytes]
+                set opcode [parseScript $nscriptbytes $idSPK]
+                if { ![decodeParse $opcode $nscriptbytes] } {return} 
+                lappend ScriptSigOpcodes $opcode
+              }
+              } else {
+                lappend ScriptSigOpcodes "<null>"
+              } 
 
             uint32 -hex "nSequence"
           }
         }
+        lappend ScriptSigOpcodesArray $ScriptSigOpcodes
       }  
-      
+    
       # outputs
       set nOutputs [getVarint]
       
@@ -403,13 +476,14 @@ if {$nscriptbytes <= 0} {
   return
 }
             bytes $nscriptbytes "ScriptPubKey"
-#if {1 && $k == 0 && $tx == 64} {
             move -$nscriptbytes
             set idSPK [hex $nscriptbytes]
-            if {![parseSPK $nscriptbytes $idSPK]} {return}
-#}
+            set opcode [parseScript $nscriptbytes $idSPK]
+            if { ![decodeParse $opcode $nscriptbytes] } {return}         
+            lappend ScriptPubKeyOpcodes $opcode
           }
         }
+        lappend ScriptPubKeyOpcodesArray $ScriptPubKeyOpcodes
       }
   
       #if it's a Segwit transaction process the witness data for each input
@@ -422,6 +496,13 @@ if {$nscriptbytes <= 0} {
               section -collapsed "Stack"  {
                 for {set l 0} {$l < $nwitstack} {incr l} {
                   set nscriptbytes [getVarint]
+if {0 && $tx != 0} {
+                  set idSPK [hex $nscriptbytes]
+                  set opcode [parseScript $nscriptbytes $idSPK]
+                  if { ![decodeParse $opcode $nscriptbytes] } {return}
+                  lappend WitnessOpcodes $opcode
+                  move -$nscriptbytes
+}
                   set wType [witnessType $nscriptbytes]
               
                   switch $wType {
@@ -437,10 +518,14 @@ if {$nscriptbytes <= 0} {
                     "wtOP_" {
                       if {![decodeMultiSig]} {
                         bytes $nscriptbytes "item [expr $l + 1] $nscriptbytes bytes"
-                        # return
                       }
                     }
-                    "wtPK" {
+                    "wtcPK" {
+                      if {![decodePubKey $nscriptbytes]} {
+                        return
+                      }
+                    }  
+                    "wtuPK" {
                       if {![decodePubKey $nscriptbytes]} {
                         return
                       }
@@ -461,16 +546,16 @@ if {$nscriptbytes > 400} {
                       return
                     }
                   }
-
                 } ; # for each stack item
               }   ; # Section stack items   
             }     ; # Section Witness input   
           }       ; # for each input
+          lappend WitnessOpcodesArray $WitnessOpcodes
         }         ; # Section Witness data
       }           ; # process Segwit data
 
-      uint32 "nLockTime"
-      
+      uint32 "nLockTime" 
+
     } ; # Section single transaction
   } ; # for each transaction
 } ; # Section all transactions
