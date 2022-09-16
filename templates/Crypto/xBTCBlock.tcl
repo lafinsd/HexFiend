@@ -176,31 +176,31 @@ proc isSignature {len}  {
 }
 
 # this proc leaves the file pointer at the byte after the length spec.
-proc witnessType {len} {
+proc decodeStack {len} {
   if {$len == 0} {
-    set type "wtOP_0"
+    set type "stOP_0"
   } else {
     set op [uint8]
     move -1
 
     if {$op == 0x30 && $len >= 67 &&  $len <= 73} {
-      set type "wtDER"
+      set type "stDER"
       set rv [isSignature $len]
       if {$rv == 0} {
-        set type "wtbadDER"
+        set type "stbadDER"
       }
 #      entry "isSig rv " $rv
     } elseif {$op >= 0x51 && $op <= 0x60 && $len != 32} {
-      set type "wtOP_"
+      set type "stOP_"
     } elseif {$len == 33 && ($op == 2  ||  $op == 3)} {
-      set type "wtcPK"
+      set type "stcPK"
     } elseif {$len == 65 && $op == 4} {
-      set type "wtuPK"
+      set type "stuPK"
     } else {
-      set type "wtIDK"
+      set type "stIDK"
     }
   }
-  entry "wType" $type
+#  entry "stackType" $type
   return $type
 }
 
@@ -329,10 +329,54 @@ proc parseScript {len script}  {
     return $tmplist
 }
 
+
+# this procedure leaves the pointer at the end of the data
+proc showStack {type len} {                  
+  switch $type {
+    "stbadDER" {
+      entry "short sig fails" $type
+      return 0
+    }
+    "stDER" {
+      if {![decodeSig]} {
+        return 0
+      }
+    }
+    "stOP_" {
+      if {![decodeMultiSig]} {
+        bytes $len "$len bytes"
+      }
+    }
+    "stcPK" {
+      if {![decodePubKey $len]} {
+        return 0
+      }
+    }  
+    "stuPK" {
+      if {![decodePubKey $len]} {
+        return 0
+      }
+    }
+    "stOP_0" {
+      move -1
+      uint8 "OP_0" 
+    }
+    "stIDK" {
+      bytes $len "$len bytes"
+    }
+    default {
+      entry "unknown stack data type" $type
+      return 0
+    }
+  }
+  return 1
+}
+
+
 proc decodeParse {opcodes len} {
 
   move -$len
-  section "OP_Decode" {
+  section "Decode" {
     for {set i 0} {$i < [llength $opcodes]} {incr i} {
       set cur [lindex $opcodes $i]
       lassign $cur code a1 a2
@@ -344,10 +388,14 @@ proc decodeParse {opcodes len} {
       } elseif {$code == "OP_PUSHDATA1"} {
         uint8 $ostr
         uint8 "push"
-        bytes $a1 "<stack>"
+        set type [decodeStack $a1]
+        set retval [showStack $type $a1]
+        if {$retval == 0} {return 0}
       } elseif {$code == "OP_PUSH"} {
         uint8 $ostr
-        bytes $a1 "<stack>"
+        set type [decodeStack $a1]
+        set retval [showStack $type $a1]
+        if {$retval == 0} {return 0}
       } elseif {$code == "OP_IDK"} {
         entry "Opcode" $cur
         return 0
@@ -468,8 +516,6 @@ section -collapsed "TX COUNT $blockTxnum"  {
         for {set k 0} {$k < $nOutputs} {incr k} {
           section "Output $k" {
             uint64 "Satoshi"
-            move -8
-            set numSats [uint64]
             set nscriptbytes [getVarint "ScriptPubKey len"]
 if {$nscriptbytes <= 0} {
   entry "output nscriptbytes is bogus"  $nscriptbytes
@@ -496,55 +542,10 @@ if {$nscriptbytes <= 0} {
               section -collapsed "Stack"  {
                 for {set l 0} {$l < $nwitstack} {incr l} {
                   set nscriptbytes [getVarint]
-if {0 && $tx != 0} {
-                  set idSPK [hex $nscriptbytes]
-                  set opcode [parseScript $nscriptbytes $idSPK]
-                  if { ![decodeParse $opcode $nscriptbytes] } {return}
-                  lappend WitnessOpcodes $opcode
-                  move -$nscriptbytes
-}
-                  set wType [witnessType $nscriptbytes]
-              
-                  switch $wType {
-                    "wtbadDER" {
-                      entry "short sig fails" $l
-                      return
-                    }
-                    "wtDER" {
-                      if {![decodeSig]} {
-                        return
-                      }
-                    }
-                    "wtOP_" {
-                      if {![decodeMultiSig]} {
-                        bytes $nscriptbytes "item [expr $l + 1] $nscriptbytes bytes"
-                      }
-                    }
-                    "wtcPK" {
-                      if {![decodePubKey $nscriptbytes]} {
-                        return
-                      }
-                    }  
-                    "wtuPK" {
-                      if {![decodePubKey $nscriptbytes]} {
-                        return
-                      }
-                    }
-                    "wtOP_0" {
-                      move -1
-                      uint8 "OP_0" 
-                    }
-                    "wtIDK" {
-if {$nscriptbytes > 400} {
-  entry "nsb too big" $nscriptbytes
-  return
-}
-                      bytes $nscriptbytes "item [expr $l + 1] $nscriptbytes bytes"
-                    }
-                    default {
-                      entry "unknown witness data type" $wType
-                      return
-                    }
+                  set wType [decodeStack $nscriptbytes]
+
+                  if {![showStack $wType $nscriptbytes]} {
+                    return
                   }
                 } ; # for each stack item
               }   ; # Section stack items   
