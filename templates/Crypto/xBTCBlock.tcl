@@ -138,7 +138,7 @@ proc isSignature {len}  {
     return 0
   }
   
-  set slen [uint8]
+  set slen [uint8] 
   incr curpos
   if {[expr {$slen + 3}] != $len} {
     move -$curpos
@@ -180,58 +180,31 @@ proc decodeStack {len} {
   if {$len == 0} {
     set type "stOP_0"
   } else {
-    set op [uint8]
-    move -1
-
+    set op  [uint8]
+    set op1 [uint8]
+    move -2
+    
     if {$op == 0x30 && $len >= 67 &&  $len <= 73} {
       set type "stDER"
       set rv [isSignature $len]
       if {$rv == 0} {
         set type "stbadDER"
       }
-#      entry "isSig rv " $rv
+    } elseif {$op == 81 && $op1 == 32} {
+      set type "stOP1SchPUBK"
     } elseif {$op >= 0x51 && $op <= 0x60 && $len != 32} {
       set type "stOP_"
     } elseif {$len == 33 && ($op == 2  ||  $op == 3)} {
       set type "stcPK"
     } elseif {$len == 65 && $op == 4} {
       set type "stuPK"
+    } elseif {$op == 0 && $op1 == 20} {
+      set type "stOP0HASH"
     } else {
       set type "stIDK"
     }
   }
-#  entry "stackType" $type
   return $type
-}
-
-
-proc isTarget {Target} {
-  # target string
-  entry "target" $Target
-  
-  set slen [string length $Target]
-  entry "slen" $slen
-  
-  if {$slen % 2} {return 0}
-
- # Target literal string must be prefixed with "0x" because the Hex Fiend hex read will prefix read result with an 0x
- set strTarget "0x"
- append strTarget $Target
- entry "appended target" $strTarget
- 
- # read the test data
-  set strTest [hex [expr {$slen/2}]]
-  entry "test" $strTest
-
-  # here's the actual test
-  if {$strTest == $strTarget} {
-    set retval 1
-  } else {
-    set retval 0
-  }
-
-  entry "isTarget retval" $retval
-  return $retval
 }
 
 proc getOP_CODE {string idx} {
@@ -248,6 +221,7 @@ proc getOP_CODE {string idx} {
           "A9" \
           "AC" \ 
           "AE" \   
+          "AF" \
        }
        
   set mcodes { \
@@ -262,6 +236,7 @@ proc getOP_CODE {string idx} {
           "OP_HASH160" \
           "OP_CHECKSIG" \    
           "OP_CHECKMULTISIG" \
+          "OP_CHKMULTISIGVRFY" \
        }
        
   set retval  "OP_IDK"
@@ -276,7 +251,7 @@ proc getOP_CODE {string idx} {
     set auxval1 $numericOC
     set auxval2 [expr $idx/2]
   } elseif {$numericOC > 80  &&  $numericOC < 97} {
-    set retval "OP_[]"
+    set retval "OP_"
     set auxval1 [expr {$numericOC - 80}]
     set auxval2 [expr $idx/2]
   } else {
@@ -305,13 +280,14 @@ proc getOP_CODE {string idx} {
 }
 
 proc parseScript {len script}  {
-  
+
   set pos [expr $len * 2 + 2]
   set opcode {}
   set tmplist {}
   
     for {set i 2} {$i < $pos} {incr i 2} {
       set opcode [getOP_CODE $script $i]
+
       lassign $opcode cmd auxval1 auxval2
       lappend tmplist $opcode
     
@@ -333,6 +309,11 @@ proc parseScript {len script}  {
 # this procedure leaves the pointer at the end of the data
 proc showStack {type len} {                  
   switch $type {
+    "stOP1SchPUBK" {
+      uint8 "OP_1"
+      uint8 "OP_PUSH"
+      bytes 32 "<TR PubKey>"
+    }
     "stbadDER" {
       entry "short sig fails" $type
       return 0
@@ -357,6 +338,13 @@ proc showStack {type len} {
         return 0
       }
     }
+    "stOP0HASH" {
+      section -collapsed "more" {
+        uint8 "OP_0"
+        uint8 "OP_PUSH"
+        bytes 20 "<hash>"
+      }
+    }
     "stOP_0" {
       move -1
       uint8 "OP_0" 
@@ -376,15 +364,26 @@ proc showStack {type len} {
 proc decodeParse {opcodes len} {
 
   move -$len
-  section "Decode" {
-    for {set i 0} {$i < [llength $opcodes]} {incr i} {
+  set done 0
+  set llen [llength $opcodes]
+  
+  section -collapsed "Decode" {
+    for {set i 0} {$i < $llen  &&  $done == 0} {incr i} {
       set cur [lindex $opcodes $i]
       lassign $cur code a1 a2
       set ostr $code
       
       if {$code == "OP_"} {
-        set ostr $code$a1
-        uint8 $ostr
+        if {$llen == 2} {
+          set type [decodeStack $a1]
+          if {$type == "stOP1SchPUBK"} {
+            set retval [showStack $type $a1]
+            set done 1
+          }
+        } else {
+          set ostr $code$a1
+          uint8 $ostr
+        }
       } elseif {$code == "OP_PUSHDATA1"} {
         uint8 $ostr
         uint8 "push"
@@ -397,21 +396,22 @@ proc decodeParse {opcodes len} {
         set retval [showStack $type $a1]
         if {$retval == 0} {return 0}
       } elseif {$code == "OP_IDK"} {
-        entry "Opcode" $cur
+        entry "Decode Opcode" $cur
         return 0
       } else {
         uint8 $ostr
       }
-#      entry "Opcode" $ostr
-#      entry "full Opcode" $cur
     }
   }
   
   return 1
 }
 
-# *********************************************************************************************************************
+# ***********************************************************************************************************************
 
+set null ""
+set exitMsg [format "Exit: normal"]
+set done 0
 
 # BTC Magic is 4 bytes (0xF9BEB4D9) but it is more convenient to treat the 4 bytes as a little endian uint32.
 set BTCMagic 0xD9B4BEF9
@@ -442,7 +442,7 @@ set blockTxnum [getVarint]
 
 # There may be hundreds of transactions. Make a collapsed section to keep the overview initially brief.
 section -collapsed "TX COUNT $blockTxnum"  {
-  for {set tx 0} {$tx < $blockTxnum} {incr tx} {
+  for {set tx 0} {$tx < $blockTxnum && $done == 0} {incr tx} {
     section -collapsed "Transaction $tx" {     
       set ScriptSigOpcodes {}
       set ScriptPubKeyOpcodes {}
@@ -474,7 +474,7 @@ section -collapsed "TX COUNT $blockTxnum"  {
       
       # process the inputs.
       section -collapsed "INPUT COUNT $nInputs"  {
-        for {set k 0} {$k < $nInputs} {incr k} {  
+        for {set k 0} {$k < $nInputs && $done == 0} {incr k} {  
           section "Input $k" {
             bytes 32  "UTXO"
             uint32    "index"
@@ -495,12 +495,16 @@ section -collapsed "TX COUNT $blockTxnum"  {
                 move -$nscriptbytes
                 set idSPK [hex $nscriptbytes]
                 set opcode [parseScript $nscriptbytes $idSPK]
-                if { ![decodeParse $opcode $nscriptbytes] } {return} 
+                if { ![decodeParse $opcode $nscriptbytes] } {
+                  set exitMsg [format "Exit: ScriptSig decodeParse fail Tx: %d  input %d " $tx $k]
+                  set done 1
+                  continue
+                } 
                 lappend ScriptSigOpcodes $opcode
               }
-              } else {
+            } else {
                 lappend ScriptSigOpcodes "<null>"
-              } 
+            } 
 
             uint32 -hex "nSequence"
           }
@@ -513,7 +517,7 @@ section -collapsed "TX COUNT $blockTxnum"  {
       
       # process the outputs
       section -collapsed "OUTPUT COUNT $nOutputs"  {
-        for {set k 0} {$k < $nOutputs} {incr k} {
+        for {set k 0} {$k < $nOutputs && $done == 0} {incr k} {
           section "Output $k" {
             uint64 "Satoshi"
             set nscriptbytes [getVarint "ScriptPubKey len"]
@@ -525,27 +529,32 @@ if {$nscriptbytes <= 0} {
             move -$nscriptbytes
             set idSPK [hex $nscriptbytes]
             set opcode [parseScript $nscriptbytes $idSPK]
-            if { ![decodeParse $opcode $nscriptbytes] } {return}         
+            if { ![decodeParse $opcode $nscriptbytes] } {
+              set exitMsg [format "Exit: ScriptPubKey decodeParse fail Tx: %d  output %d " $tx $k]
+              set done 1
+              continue
+            }         
             lappend ScriptPubKeyOpcodes $opcode
           }
         }
         lappend ScriptPubKeyOpcodesArray $ScriptPubKeyOpcodes
       }
-  
+
       #if it's a Segwit transaction process the witness data for each input
       if {$segwit} {
         section -collapsed "WITNESS DATA"  {
           # this is the witness data for each input
-          for {set k 0} {$k < $nInputs} {incr k} {
+          for {set k 0} {$k < $nInputs && $done == 0} {incr k} {
             section "Witness Input $k" {
               set nwitstack [getVarint "STACK COUNT"]
               section -collapsed "Stack"  {
                 for {set l 0} {$l < $nwitstack} {incr l} {
                   set nscriptbytes [getVarint]
                   set wType [decodeStack $nscriptbytes]
-
                   if {![showStack $wType $nscriptbytes]} {
-                    return
+                    set exitMsg [format "Exit: Witness showSrack fail Tx: %d  input %d " $tx $k]
+                    set done 1
+                    continue
                   }
                 } ; # for each stack item
               }   ; # Section stack items   
@@ -555,8 +564,10 @@ if {$nscriptbytes <= 0} {
         }         ; # Section Witness data
       }           ; # process Segwit data
 
-      uint32 "nLockTime" 
+      if {$done == 0} {uint32 "nLockTime"} 
 
     } ; # Section single transaction
   } ; # for each transaction
 } ; # Section all transactions
+
+entry $exitMsg $null
