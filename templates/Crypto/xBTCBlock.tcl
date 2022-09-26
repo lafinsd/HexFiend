@@ -175,6 +175,11 @@ proc isSignature {len}  {
   return 1
 }
 
+# This proc tries to interpret contents of a Witness stack element. The witness stack elements each contain data whose length is
+# specified by a preceeding byte count. Generally the data are not script though the data might represent an elemental structure
+# like a signature or public key. This proc is also used when processing ScriptSig and ScriptPubKey to interpret data pushed 
+# onto the stack. Typically in this case the data are elemental structures.
+#
 # this proc leaves the file pointer at the byte after the length spec.
 proc decodeStack {len} {
   if {$len == 0} {
@@ -191,8 +196,9 @@ proc decodeStack {len} {
         set type "stbadDER"
       }
     } elseif {$op == 81 && $op1 == 32} {
-      set type "stOP1SchPUBK"
-    } elseif {$op >= 0x51 && $op <= 0x60 && $len != 32} {
+      # Version 1 SegWit: Taproot
+      set type "stOP1TRPUBK"
+    } elseif {$op >= 81 && $op <= 96} {
       set type "stOP_"
     } elseif {$len == 33 && ($op == 2  ||  $op == 3)} {
       set type "stcPK"
@@ -305,37 +311,46 @@ proc parseScript {len script}  {
     return $tmplist
 }
 
-
+# Display data previously interpreted from the stack. It is either Witness stack data or possibly data pushed in a ScriptSig or
+# ScriptPubKey script.
+#
 # this procedure leaves the pointer at the end of the data
-proc showStack {type len} {                  
+proc showStack {type len {opret 0}} { 
+  set retval 1
+                   
   switch $type {
-    "stOP1SchPUBK" {
+    "stOP1TRPUBK" {
+      # Version 1 SegWit: Taproot
       uint8 "OP_1"
       uint8 "OP_PUSH"
       bytes 32 "<TR PubKey>"
     }
     "stbadDER" {
       entry "short sig fails" $type
-      return 0
+      set retval 0
     }
     "stDER" {
       if {![decodeSig]} {
-        return 0
+        set retval 0
       }
     }
     "stOP_" {
       if {![decodeMultiSig]} {
-        bytes $len "$len bytes"
+        if {$len == 20} {
+          bytes $len "<hash>"
+        } else {
+          bytes $len "nonMS bytes"
+        }
       }
     }
     "stcPK" {
       if {![decodePubKey $len]} {
-        return 0
+        set retval 0
       }
     }  
     "stuPK" {
       if {![decodePubKey $len]} {
-        return 0
+        set retval 0
       }
     }
     "stOP0HASH" {
@@ -350,21 +365,33 @@ proc showStack {type len} {
       uint8 "OP_0" 
     }
     "stIDK" {
-      bytes $len "$len bytes"
+      # No specific clue to data on stack. There are a few cases we can guess.
+      if {$len == 20} {
+        # Probably a key or script hash
+        bytes $len "<hash>"
+      } elseif {$opret != 0} {
+        # Arbitrary data (sometimes printable characters) after an OP_RETURN (which guarantees script result is not TRUE)
+        bytes $len "OP_RETURN data"
+      } else {
+        # I Don't Know
+        bytes $len "IDK bytes"
+      }
     }
     default {
       entry "unknown stack data type" $type
-      return 0
+      set retval 0
     }
   }
-  return 1
+  return $retval
 }
 
-
-proc decodeParse {opcodes len} {
+# Display script detail for each opcode discovered in ScriptSig or ScriptPubKey item.
+proc decodeParse {opcodes len whoami {sats 0}} {
 
   move -$len
   set done 0
+  set retval 1
+  set opret 0
   set llen [llength $opcodes]
   
   section -collapsed "Decode" {
@@ -374,9 +401,10 @@ proc decodeParse {opcodes len} {
       set ostr $code
       
       if {$code == "OP_"} {
-        if {$llen == 2} {
+        if {$llen == 2  &&  $whoami == "ScriptPubKey"} {
+          # See if this is the special case of SegWit Version 1 P2TR public key
           set type [decodeStack $a1]
-          if {$type == "stOP1SchPUBK"} {
+          if {$type == "stOP1TRPUBK"} {
             set retval [showStack $type $a1]
             set done 1
           }
@@ -388,26 +416,48 @@ proc decodeParse {opcodes len} {
         uint8 $ostr
         uint8 "push"
         set type [decodeStack $a1]
-        set retval [showStack $type $a1]
-        if {$retval == 0} {return 0}
+        set retval [showStack $type $a1 $opret]
+        if {$retval == 0} {set done 1}
       } elseif {$code == "OP_PUSH"} {
         uint8 $ostr
         set type [decodeStack $a1]
-        set retval [showStack $type $a1]
-        if {$retval == 0} {return 0}
+        set retval [showStack $type $a1 $opret]
+        if {$retval == 0} {set done 1}
       } elseif {$code == "OP_IDK"} {
         entry "Decode Opcode" $cur
-        return 0
+        set retval 0
+        set done 1
       } else {
         uint8 $ostr
+        if {$code == "OP_RETURN"} {
+          if {$sats != 0} {
+            entry "(Sats unspendable)" ""
+          }
+          # provide context to subsequent procs that because of OP_RETURN the script will fail 
+          set opret 1
+        }
       }
     }
   }
   
-  return 1
+  return $retval
 }
 
 # ***********************************************************************************************************************
+
+#debug setup
+set op_ss  {}
+set ssTarget {}
+set nssTar [llength $ssTarget]
+
+set op_spk {}
+set spkTarget {}
+set nspkTar [llength $spkTarget]
+
+set debugMsgs {}
+#end debug setup
+
+
 
 set null ""
 set exitMsg [format "Exit: normal"]
@@ -419,37 +469,40 @@ set BTCMagic 0xD9B4BEF9
 # Block Magic sanity check
 if {[uint32] != $BTCMagic} {
   move -4
-  error "[format "Bad Magic %4X" [hex 4] ]"
+  set exitMsg [format "Exit: Bad Magic %4X" [hex 4] ]
+  set done 1
+} else {
+
+  # Display the block metadata
+  move  -4
+  bytes  4 "Magic"
+  uint32   "Block length"
+
+  # Process actual block data
+  section "Block header" {
+    uint32 -hex "version"
+    bytes 32    "prev blk hash"
+    bytes 32    "Merkle root"
+    unixtime32  "time"
+    uint32      "bits"
+    uint32      "nonce"
+  }
+
+  # get the number of transactions for the block
+  set blockTxnum [getVarint] 
 }
 
-# Display the block metadata
-move  -4
-bytes  4 "Magic"
-uint32   "Block length"
-
-# Process actual block data
-section "Block header" {
-  uint32 -hex "version"
-  bytes 32    "prev blk hash"
-  bytes 32    "Merkle root"
-  unixtime32  "time"
-  uint32      "bits"
-  uint32      "nonce"
-}
-
-# get the number of transactions for the block
-set blockTxnum [getVarint]
-
+if {$done == 0} {
 # There may be hundreds of transactions. Make a collapsed section to keep the overview initially brief.
 section -collapsed "TX COUNT $blockTxnum"  {
   for {set tx 0} {$tx < $blockTxnum && $done == 0} {incr tx} {
     section -collapsed "Transaction $tx" {     
-      set ScriptSigOpcodes {}
-      set ScriptPubKeyOpcodes {}
-      set WitnessOpcodes {}
-      set ScriptSigOpcodesArray {}
-      set ScriptPubKeyOpcodesArray {}
-      set WitnessOpcodesArray {}
+#      set ScriptSigOpcodes {}
+#      set ScriptPubKeyOpcodes {}
+#      set WitnessOpcodes {}
+#      set ScriptSigOpcodesArray {}
+#      set ScriptPubKeyOpcodesArray {}
+#      set WitnessOpcodesArray {}
 
       uint32 -hex "Tx version"
   
@@ -491,25 +544,42 @@ section -collapsed "TX COUNT $blockTxnum"  {
               # move back to beginning of script 
               move -1
               bytes $nscriptbytes "ScriptSig"
+              if {$nscriptbytes < 0} {
+                set exitMsg [format "Exit: OInput nscriptbytes (%d) is bogus Tx: %d input %d" $nscriptbytes $tx $k]
+                set done 1
+                continue
+              }
               if {$tx != 0  ||  $k != 0} {
                 move -$nscriptbytes
                 set idSPK [hex $nscriptbytes]
                 set opcode [parseScript $nscriptbytes $idSPK]
-                if { ![decodeParse $opcode $nscriptbytes] } {
+if {1} {
+  for {set n 0} {$n < $nssTar} {incr n} {
+    set t [lindex $ssTarget $n]
+    for {set m 0} {$m < [llength $opcode]} {incr m} {
+      set oc [lindex [lindex $opcode $m] 0]
+      if {$oc ==  $t} {
+        lappend op_ss [list $tx $k $t]
+      }
+    }
+  }
+}
+
+                if { ![decodeParse $opcode $nscriptbytes "ScriptSig"] } {
                   set exitMsg [format "Exit: ScriptSig decodeParse fail Tx: %d  input %d " $tx $k]
                   set done 1
                   continue
                 } 
-                lappend ScriptSigOpcodes $opcode
+#                lappend ScriptSigOpcodes $opcode
               }
-            } else {
-                lappend ScriptSigOpcodes "<null>"
-            } 
+          } else {
+#                lappend ScriptSigOpcodes "<null>"
+          } 
 
             uint32 -hex "nSequence"
           }
         }
-        lappend ScriptSigOpcodesArray $ScriptSigOpcodes
+#        lappend ScriptSigOpcodesArray $ScriptSigOpcodes
       }  
     
       # outputs
@@ -519,25 +589,39 @@ section -collapsed "TX COUNT $blockTxnum"  {
       section -collapsed "OUTPUT COUNT $nOutputs"  {
         for {set k 0} {$k < $nOutputs && $done == 0} {incr k} {
           section "Output $k" {
+            set sats [uint64]
+            move -8
             uint64 "Satoshi"
             set nscriptbytes [getVarint "ScriptPubKey len"]
-if {$nscriptbytes <= 0} {
-  entry "output nscriptbytes is bogus"  $nscriptbytes
-  return
-}
+            if {$nscriptbytes <= 0} {
+              set exitMsg [format "Exit: Output nscriptbytes (%d) is bogus Tx: %d output %d" $nscriptbytes $tx $k]
+              set done 1
+              continue
+            }
             bytes $nscriptbytes "ScriptPubKey"
             move -$nscriptbytes
             set idSPK [hex $nscriptbytes]
             set opcode [parseScript $nscriptbytes $idSPK]
-            if { ![decodeParse $opcode $nscriptbytes] } {
+if {1} {
+  for {set n 0} {$n < $nspkTar} {incr n} {
+    set t [lindex $spkTarget $n]
+    for {set m 0} {$m < [llength $opcode]} {incr m} {
+      set oc [lindex [lindex $opcode $m] 0]
+      if {$oc ==  $t} {
+        lappend op_spk [list $tx $k $t]
+      }
+    }
+  }
+}
+            if { ![decodeParse $opcode $nscriptbytes "ScriptPubKey" $sats] } {
               set exitMsg [format "Exit: ScriptPubKey decodeParse fail Tx: %d  output %d " $tx $k]
               set done 1
               continue
             }         
-            lappend ScriptPubKeyOpcodes $opcode
+#            lappend ScriptPubKeyOpcodes $opcode
           }
         }
-        lappend ScriptPubKeyOpcodesArray $ScriptPubKeyOpcodes
+#        lappend ScriptPubKeyOpcodesArray $ScriptPubKeyOpcodes
       }
 
       #if it's a Segwit transaction process the witness data for each input
@@ -548,8 +632,8 @@ if {$nscriptbytes <= 0} {
             section "Witness Input $k" {
               set nwitstack [getVarint "STACK COUNT"]
               section -collapsed "Stack"  {
-                for {set l 0} {$l < $nwitstack} {incr l} {
-                  set nscriptbytes [getVarint]
+                for {set l 0} {$l < $nwitstack} {incr l} {  
+                  set nscriptbytes [getVarint "item len"]     
                   set wType [decodeStack $nscriptbytes]
                   if {![showStack $wType $nscriptbytes]} {
                     set exitMsg [format "Exit: Witness showSrack fail Tx: %d  input %d " $tx $k]
@@ -560,7 +644,7 @@ if {$nscriptbytes <= 0} {
               }   ; # Section stack items   
             }     ; # Section Witness input   
           }       ; # for each input
-          lappend WitnessOpcodesArray $WitnessOpcodes
+#          lappend WitnessOpcodesArray $WitnessOpcodes
         }         ; # Section Witness data
       }           ; # process Segwit data
 
@@ -569,5 +653,38 @@ if {$nscriptbytes <= 0} {
     } ; # Section single transaction
   } ; # for each transaction
 } ; # Section all transactions
+} ; # done == 0
 
+entry " " $null
 entry $exitMsg $null
+entry " " $null
+
+
+
+# debug/instrumentation 
+
+for {set i 0} {$i < [llength $debugMsgs]} {incr i} {
+  entry [lindex $debugMsgs $i] $null
+}
+
+if {[llength $op_ss] > 0} {
+  entry "SS Target opcodes" $ssTarget
+  entry "op_ss len" [llength $op_ss]
+  section -collapsed "op_ss" {
+    for {set i 0} {$i < [llength $op_ss]}  {incr i} {
+     entry [format "op_ss %d" $i] [lindex $op_ss $i]
+    }
+  }
+}
+
+if {[llength $op_spk] > 0} {
+  entry "SPK Target opcodes" $spkTarget
+  entry "op_spk len" [llength $op_spk]
+  section -collapsed "op_spk" {
+    for {set i 0} {$i < [llength $op_spk]}  {incr i} {
+      entry [format "op_spk %d" $i] [lindex $op_spk $i]
+    }
+  }
+}
+
+# end debug/instrumentation
