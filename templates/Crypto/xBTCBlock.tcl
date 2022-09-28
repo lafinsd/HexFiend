@@ -1,11 +1,26 @@
-# Bitcoin Core Block
+# Binary Temnplate for Bitcoin Core Block content
 #   Process a single Bitcoin block contained in a Bitcoin Core blk*.dat file. 
 #
+#   Bitcoin Core blk*.dat files begin with 4 Magic bytes. These Magic bytes serve as a preamble to each block 
+#   in the blk*.dat file. When invoked this template will align correctly on the inital block in the blk*.dat
+#   file. Different blocks can be examined by using the Hex Fiend 'Anchor Template at Offset' feature and anchoring 
+#   on any Magic bytes in the file.
+#
+#   For each Transaction in the block this version will try and decode the contents of any ScriptSig or ScriptPubKey 
+#   accomapnying inputs and outputs, respectively. After each of these that has a non-zero entry there will be a 
+#   collapsed Hex Fiend Section called 'Decode'. Expanding this section will reveal a labeled version of the 
+#   respective stack content.
+
+#   It will also try to interpret Witness data. Witness data are more general and are not structured except as 
+#   determined by context. Witness items for each input are placed on the stack separately. Each stack item is 
+#   labeled individually as it is encountered. There is no separate 'Decode' Section for the Witness stack items 
+#   for each input.
+
 
 
 # Return a BTC varint value. Presence of an argument causes the varint to be displayed as a Hex Fiend 
-# field with the argument as the label. The file pointer is left at the first byte past the varint field.
-proc getVarint {args} {
+# field with the argument as the label. The file pointer is left at the first byte past the varint.
+proc getVarint {{label ""}} {
   
     # Read the indicator byte
     set val [uint8]
@@ -27,9 +42,9 @@ proc getVarint {args} {
        set type   "uint8"
     }
     
-    if {[llength $args] == 1}  {
+    if {$label != ""}  {
       move $moveit
-      $type [lindex $args 0]
+      $type $label
     }
 
     return $val
@@ -59,16 +74,18 @@ proc isPubKey {} {
 }
 
 proc decodePubKey {len} {
+  set retval 1
   
   if {$len == 33} {
     bytes $len "Compressed PubKey"
   } elseif {$len == 65} {
     bytes $len "Uncompressed PubKey"
   } else {
-    bytes $len "PubKey"
+    bytes $len "Unk Key"
+    set retval 0
   }
   
-  return 1
+  return $retval
 }
 
 proc decodeMultiSig {} {
@@ -371,7 +388,7 @@ proc showStack {type len {opret 0}} {
         bytes $len "<hash>"
       } elseif {$opret != 0} {
         # Arbitrary data (sometimes printable characters) after an OP_RETURN (which guarantees script result is not TRUE)
-        bytes $len "OP_RETURN data"
+        bytes $len "<data>"
       } else {
         # I Don't Know
         bytes $len "IDK bytes"
@@ -661,7 +678,7 @@ entry " " $null
 
 
 
-# debug/instrumentation 
+# debug/instrumentation
 
 for {set i 0} {$i < [llength $debugMsgs]} {incr i} {
   entry [lindex $debugMsgs $i] $null
