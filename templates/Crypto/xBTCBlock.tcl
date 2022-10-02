@@ -1,4 +1,4 @@
-# Binary Temnplate for Bitcoin Core Block content
+# Binary Temnplate for Bitcoin Core Block content: expanded version
 #   Process a single Bitcoin block contained in a Bitcoin Core blk*.dat file. 
 #
 #   Bitcoin Core blk*.dat files begin with 4 Magic bytes. These Magic bytes serve as a preamble to each block 
@@ -15,6 +15,12 @@
 #   determined by context. Witness items for each input are placed on the stack separately. Each stack item is 
 #   labeled individually as it is encountered. There is no separate 'Decode' Section for the Witness stack items 
 #   for each input.
+#
+#   The newest additions to Bitcoin Core (v 23.0.0) support Taproot. The decodings implemented here attempt to 
+#   support P2TR key path ScriptPubKey entries and Schnorr signatures in Witness data. P2TR script path witness 
+#   data are not yet supported here.
+#
+# This expanded Template version is offered AS-IS. The decodings and other interpretations of data are best effort.
 
 
 
@@ -263,21 +269,23 @@ proc getOP_CODE {string idx} {
        }
        
   set retval  "OP_IDK"
-  set auxval1 0
-  set auxval2 0
+  set auxval1 0   ; # Parameter of opcode
+  set auxval2 0   ; # Location in string
   
   set opcode [string index $string $idx][string index $string [incr idx]]
   scan $opcode %x numericOC
  
+  # First check for opcodes that do not have a singular representation
   if {$numericOC > 0  &&  $numericOC < 76} {
     set retval "OP_PUSH"
     set auxval1 $numericOC
     set auxval2 [expr $idx/2]
   } elseif {$numericOC > 80  &&  $numericOC < 97} {
-    set retval "OP_"
+    set retval "OP_1-16"
     set auxval1 [expr {$numericOC - 80}]
     set auxval2 [expr $idx/2]
   } else {
+    # OK to now search the list
     set indx [lsearch $ncodes $opcode]
     if {$indx >= 0} {
       set retval [lindex $mcodes $indx]
@@ -285,6 +293,7 @@ proc getOP_CODE {string idx} {
     set auxval2 [expr $idx/2]
   }
   
+  # Post processing for special cases
   if {$retval == "OP_PUSHDATA1"} {
     incr idx 
     set opcode [string index $string $idx][string index $string [incr idx]]
@@ -417,7 +426,7 @@ proc decodeParse {opcodes len whoami {sats 0}} {
       lassign $cur code a1 a2
       set ostr $code
       
-      if {$code == "OP_"} {
+      if {$code == "OP_1-16"} {
         if {$llen == 2  &&  $whoami == "ScriptPubKey"} {
           # See if this is the special case of SegWit Version 1 P2TR public key
           set type [decodeStack $a1]
@@ -467,18 +476,19 @@ set op_ss  {}
 set ssTarget {}
 set nssTar [llength $ssTarget]
 
+
 set op_spk {}
 set spkTarget {}
 set nspkTar [llength $spkTarget]
 
 set debugMsgs {}
+set DEBUG 1
 #end debug setup
-
 
 
 set null ""
 set exitMsg [format "Exit: normal"]
-set done 0
+set ALLDONE 0
 
 # BTC Magic is 4 bytes (0xF9BEB4D9) but it is more convenient to treat the 4 bytes as a little endian uint32.
 set BTCMagic 0xD9B4BEF9
@@ -487,7 +497,7 @@ set BTCMagic 0xD9B4BEF9
 if {[uint32] != $BTCMagic} {
   move -4
   set exitMsg [format "Exit: Bad Magic %4X" [hex 4] ]
-  set done 1
+  set ALLDONE 1
 } else {
 
   # Display the block metadata
@@ -509,10 +519,10 @@ if {[uint32] != $BTCMagic} {
   set blockTxnum [getVarint] 
 }
 
-if {$done == 0} {
+if {$ALLDONE == 0} {
 # There may be hundreds of transactions. Make a collapsed section to keep the overview initially brief.
 section -collapsed "TX COUNT $blockTxnum"  {
-  for {set tx 0} {$tx < $blockTxnum && $done == 0} {incr tx} {
+  for {set tx 0} {$tx < $blockTxnum && $ALLDONE == 0} {incr tx} {
     section -collapsed "Transaction $tx" {     
 #      set ScriptSigOpcodes {}
 #      set ScriptPubKeyOpcodes {}
@@ -544,7 +554,7 @@ section -collapsed "TX COUNT $blockTxnum"  {
       
       # process the inputs.
       section -collapsed "INPUT COUNT $nInputs"  {
-        for {set k 0} {$k < $nInputs && $done == 0} {incr k} {  
+        for {set k 0} {$k < $nInputs && $ALLDONE == 0} {incr k} {  
           section "Input $k" {
             bytes 32  "UTXO"
             uint32    "index"
@@ -563,38 +573,46 @@ section -collapsed "TX COUNT $blockTxnum"  {
               bytes $nscriptbytes "ScriptSig"
               if {$nscriptbytes < 0} {
                 set exitMsg [format "Exit: OInput nscriptbytes (%d) is bogus Tx: %d input %d" $nscriptbytes $tx $k]
-                set done 1
+                set ALLDONE 1
                 continue
               }
               if {$tx != 0  ||  $k != 0} {
                 move -$nscriptbytes
                 set idSPK [hex $nscriptbytes]
                 set opcode [parseScript $nscriptbytes $idSPK]
-if {1} {
-  for {set n 0} {$n < $nssTar} {incr n} {
-    set t [lindex $ssTarget $n]
-    for {set m 0} {$m < [llength $opcode]} {incr m} {
-      set oc [lindex [lindex $opcode $m] 0]
-      if {$oc ==  $t} {
-        lappend op_ss [list $tx $k $t]
-      }
-    }
-  }
+if {$DEBUG} {
+                for {set n 0} {$n < $nssTar} {incr n} {
+                  set t [lindex $ssTarget $n] 
+                  for {set m 0} {$m < [llength $opcode]} {incr m} {
+                    set oc [lindex [lindex $opcode $m] 0]
+                    if {$oc ==  $t} {
+                      lappend op_ss [list $tx $k $t]
+                    }
+                  }
+                }
 }
 
                 if { ![decodeParse $opcode $nscriptbytes "ScriptSig"] } {
                   set exitMsg [format "Exit: ScriptSig decodeParse fail Tx: %d  input %d " $tx $k]
-                  set done 1
+                  set ALLDONE 1
                   continue
                 } 
 #                lappend ScriptSigOpcodes $opcode
               }
-          } else {
-#                lappend ScriptSigOpcodes "<null>"
-          } 
+            } else {
+if {$DEBUG} {
+              for {set n 0} {$n < $nssTar} {incr n} {
+                set t [lindex $ssTarget $n] 
+                if {$t == ""} {
+                  lappend op_ss [list $tx $k "<null>"]
+                }
+              }
+}  
+#            lappend ScriptSigOpcodes "<null>"
+            } 
 
             uint32 -hex "nSequence"
-          }
+          } 
         }
 #        lappend ScriptSigOpcodesArray $ScriptSigOpcodes
       }  
@@ -604,7 +622,7 @@ if {1} {
       
       # process the outputs
       section -collapsed "OUTPUT COUNT $nOutputs"  {
-        for {set k 0} {$k < $nOutputs && $done == 0} {incr k} {
+        for {set k 0} {$k < $nOutputs && $ALLDONE == 0} {incr k} {
           section "Output $k" {
             set sats [uint64]
             move -8
@@ -612,27 +630,27 @@ if {1} {
             set nscriptbytes [getVarint "ScriptPubKey len"]
             if {$nscriptbytes <= 0} {
               set exitMsg [format "Exit: Output nscriptbytes (%d) is bogus Tx: %d output %d" $nscriptbytes $tx $k]
-              set done 1
+              set ALLDONE 1
               continue
             }
             bytes $nscriptbytes "ScriptPubKey"
             move -$nscriptbytes
             set idSPK [hex $nscriptbytes]
             set opcode [parseScript $nscriptbytes $idSPK]
-if {1} {
-  for {set n 0} {$n < $nspkTar} {incr n} {
-    set t [lindex $spkTarget $n]
-    for {set m 0} {$m < [llength $opcode]} {incr m} {
-      set oc [lindex [lindex $opcode $m] 0]
-      if {$oc ==  $t} {
-        lappend op_spk [list $tx $k $t]
-      }
-    }
-  }
+if {$DEBUG} {
+            for {set n 0} {$n < $nspkTar} {incr n} {
+              set t [lindex $spkTarget $n]
+              for {set m 0} {$m < [llength $opcode]} {incr m} {
+                set oc [lindex [lindex $opcode $m] 0]
+                if {$oc ==  $t} {
+                  lappend op_spk [list $tx $k $t]
+                }
+              }
+            }
 }
             if { ![decodeParse $opcode $nscriptbytes "ScriptPubKey" $sats] } {
               set exitMsg [format "Exit: ScriptPubKey decodeParse fail Tx: %d  output %d " $tx $k]
-              set done 1
+              set ALLDONE 1
               continue
             }         
 #            lappend ScriptPubKeyOpcodes $opcode
@@ -645,7 +663,7 @@ if {1} {
       if {$segwit} {
         section -collapsed "WITNESS DATA"  {
           # this is the witness data for each input
-          for {set k 0} {$k < $nInputs && $done == 0} {incr k} {
+          for {set k 0} {$k < $nInputs && $ALLDONE == 0} {incr k} {
             section "Witness Input $k" {
               set nwitstack [getVarint "STACK COUNT"]
               section -collapsed "Stack"  {
@@ -654,7 +672,7 @@ if {1} {
                   set wType [decodeStack $nscriptbytes]
                   if {![showStack $wType $nscriptbytes]} {
                     set exitMsg [format "Exit: Witness showSrack fail Tx: %d  input %d " $tx $k]
-                    set done 1
+                    set ALLDONE 1
                     continue
                   }
                 } ; # for each stack item
@@ -665,12 +683,12 @@ if {1} {
         }         ; # Section Witness data
       }           ; # process Segwit data
 
-      if {$done == 0} {uint32 "nLockTime"} 
+      if {$ALLDONE == 0} {uint32 "nLockTime"} 
 
     } ; # Section single transaction
   } ; # for each transaction
 } ; # Section all transactions
-} ; # done == 0
+} ; # ALLDONE == 0
 
 entry " " $null
 entry $exitMsg $null
