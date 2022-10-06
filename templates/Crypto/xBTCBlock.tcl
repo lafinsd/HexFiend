@@ -2,7 +2,7 @@
 #   Process a single Bitcoin block contained in a Bitcoin Core blk*.dat file. 
 #
 #   Bitcoin Core blk*.dat files begin with 4 Magic bytes. These Magic bytes serve as a preamble to each block 
-#   in the blk*.dat file. When invoked this template will align correctly on the inital block in the blk*.dat
+#   in the blk*.dat file. When invoked this template will align correctly on the initial block in the blk*.dat
 #   file. Different blocks can be examined by using the Hex Fiend 'Anchor Template at Offset' feature and anchoring 
 #   on any Magic bytes in the file.
 
@@ -19,7 +19,7 @@
 #     Hex Fiend byte field. There is a separate 'Decode' Section for each item for each input.
 #
 #     The newest additions to Bitcoin Core (v 23.0.0) support Taproot. The decodings implemented here attempt to 
-#     support P2TR key path ScriptPubKey entries and Schnorr signatures in Witness data. P2TR script path witness 
+#     support P2TR 'key path' ScriptPubKey entries and Schnorr signatures in Witness data. P2TR 'script path' Witness 
 #     data are not yet supported here.
 #
 # This Template is offered AS-IS. The 'Decode' sections are best effort. Additions and corrections welcomed.
@@ -204,7 +204,7 @@ proc isSignature {len}  {
 
 # This proc tries to interpret contents of a Witness stack element. The witness stack elements each contain data whose length is
 # specified by a preceeding byte count. Generally the data are not script though the data might represent an elemental structure
-# like a signature or public key. This proc is also used when processing ScriptSig and ScriptPubKey to interpret data pushed 
+# like a signature or public key. This proc is also used to process ScriptSig and ScriptPubKey trying to interpret data pushed 
 # onto the stack. Typically in this case the data are elemental structures.
 #
 # this proc leaves the file pointer at the byte after the length spec.
@@ -228,7 +228,7 @@ proc decodeStack {len} {
       set type "stOP1TRPUBK"
     } elseif {$op >= 81 && $op <= 96} {
       # Simple numeric value
-      set type "stOP_"
+      set type "stOP_81-96"
     } elseif {$len == 33 && ($op == 2  ||  $op == 3)} {
       # A compressed public key
       set type "stcPK"
@@ -310,6 +310,9 @@ proc getOP_CODE {string idx} {
     scan $opcode %x numericOC
     set auxval1 $numericOC
     set auxval2 [expr $idx/2]
+  } elseif {$retval == "OP_PUSHDATA2" ||  $retval == "OP_PUSHDATA4"} {
+    # These are not yet supported. Need to add processing of the multiple-byte length spec. Default to IDK
+    set retval "OP_IDK"
   }
   
   if {$retval == "OP_IDK"} {
@@ -346,30 +349,40 @@ proc parseScript {len script}  {
     return $tmplist
 }
 
+proc showSpecial {type len label flags} {
+  if {[expr $flags & 2]} {
+    section -collapsed "more" {
+      uint8 $type
+      uint8 "OP_PUSH"
+      bytes $len $label
+    }
+  } else {
+    uint8 $type
+    uint8 "OP_PUSH"
+    bytes $len $label
+  }
+}
+
 # Display data previously interpreted from the stack. It is either Witness stack data or possibly data pushed in a ScriptSig or
 # ScriptPubKey script.
 #
 # this procedure leaves the pointer at the end of the data
-proc showStack {type len {auxarg 0}} { 
+proc showStack {type len {flags 0}} { 
   set retval 1
                    
   switch $type {
-    "stOP1TRPUBK" {
-      # Version 1 SegWit: Taproot
-      uint8 "OP_1"
-      uint8 "OP_PUSH"
-      bytes 32 "<TR PubKey>"
-    }
     "stbadDER" {
       entry "short sig fails" $type
       set retval 0
     }
     "stDER" {
+      # Might be a DER signature
       if {![decodeSig]} {
         set retval 0
       }
     }
-    "stOP_" {
+    "stOP_81-96" {
+      # Might be a multisig
       if {![decodeMultiSig]} {
         if {$len == 20} {
           bytes $len "<hash>"
@@ -379,24 +392,35 @@ proc showStack {type len {auxarg 0}} {
       }
     }
     "stcPK" {
+      # Might be a compressed public key
       if {![decodePubKey $len]} {
         set retval 0
       }
     }  
     "stuPK" {
+      # Might be an uncompressed public key
       if {![decodePubKey $len]} {
         set retval 0
       }
     }
+    "stOP1TRPUBK" {
+      # Version 1 SegWit: Taproot
+      showSpecial "OP_1" 32 "<P2TR PubKey>" $flags
+#      uint8 "OP_1"
+#      uint8 "OP_PUSH"
+#      bytes 32 "<P2TR PubKey>"
+    }
     "stOP0HASH20" {
-      uint8 "OP_0"
-      uint8 "OP_PUSH"
-      bytes 20 "<PubKey hash>"
+      showSpecial "OP_0" 20 "<PubKey hash>" $flags
+#      uint8 "OP_0"
+#      uint8 "OP_PUSH"
+#      bytes 20 "<PubKey hash>"
     }
     "stOP0HASH32" {
-      uint8 "OP_0"
-      uint8 "OP_PUSH"
-      bytes 32 "<Script hash>"
+      showSpecial "OP_0" 32 "<Script hash>" $flags
+#      uint8 "OP_0"
+#      uint8 "OP_PUSH"
+#      bytes 32 "<Script hash>"
     }
     "stOP_0" {
       move -1
@@ -407,7 +431,7 @@ proc showStack {type len {auxarg 0}} {
       if {$len == 20 || $len == 32} {
         # Probably a key hash or a script hash
         bytes $len "<hash>"
-      } elseif {$auxarg != 0} {
+      } elseif {[expr $flags & 1]} {
         # Arbitrary data (sometimes printable characters) after an OP_RETURN (which guarantees script result is not TRUE)
         bytes $len "<data>"
       } else {
@@ -424,12 +448,12 @@ proc showStack {type len {auxarg 0}} {
 }
 
 # Display script detail for each opcode discovered in ScriptSig or ScriptPubKey item.
-proc decodeParse {opcodes len whoami {sats 0}} {
+proc decodeParse {opcodes len {sats 0}} {
 
   move -$len
   set done 0
   set retval 1
-  set opret 0
+  set flags 0
   set llen [llength $opcodes]
   
   section -collapsed "Decode" {
@@ -437,45 +461,30 @@ proc decodeParse {opcodes len whoami {sats 0}} {
       set cur [lindex $opcodes $i]
       lassign $cur code a1 a2
       set ostr $code
-      
-      if {$code == "OP_0"} {
-        if {$llen == 2  &&  $whoami == "ScriptPubKey"} {
-          # Special case for OP_0 (0x00).
-          # The OP_0 length info ('a1') is 0. But the decodeStack proc thinks it's processing Witness
-          # stack data where the stack item length info is preceeding. We're trying to use use the Witness 
-          # stack processing to work with ScriptPubKey info so as not to duplicate function. Hack by
-          # telling the decodeStack proc that the item length isn't really 0. 
-          set type [decodeStack 1]
-          if {$type == "stOP0HASH20" || $type == "stOP0HASH32"} {
-            set retval [showStack $type $a1]
-            set done 1
-          }
+
+      if {$code == "OP_1-16"} { 
+        # See if this is the special case of SegWit Version 1 P2TR public key
+        set type [decodeStack $a1]
+        if {$type == "stOP1TRPUBK"} {
+          set retval [showStack $type $a1 $flags]
+          set done 1
         } else {
-          set ostr $code$a1
+          set ostr [format "OP_%d" $a1]
           uint8 $ostr
         }
-      } elseif {$code == "OP_1-16"} {
-        if {$llen == 2  &&  $whoami == "ScriptPubKey"} {
-          # See if this is the special case of SegWit Version 1 P2TR public key
-          set type [decodeStack $a1]
-          if {$type == "stOP1TRPUBK"} {
-            set retval [showStack $type $a1]
-            set done 1
-          }
-        } else {
-          set ostr $code$a1
-          uint8 $ostr
-        }
+        set flags [expr $flags | 2]
       } elseif {$code == "OP_PUSHDATA1"} {
+        set flags [expr $flags | 2]
         uint8 $ostr
         uint8 "push"
         set type [decodeStack $a1]
-        set retval [showStack $type $a1 $opret]
+        set retval [showStack $type $a1 $flags]
         if {$retval == 0} {set done 1}
       } elseif {$code == "OP_PUSH"} {
+        set flags [expr $flags | 2]
         uint8 $ostr
         set type [decodeStack $a1]
-        set retval [showStack $type $a1 $opret]
+        set retval [showStack $type $a1 $flags]
         if {$retval == 0} {set done 1}
       } elseif {$code == "OP_IDK"} {
         entry "Decode Opcode" $cur
@@ -488,9 +497,10 @@ proc decodeParse {opcodes len whoami {sats 0}} {
             entry "(Sats unspendable)" ""
           }
           # provide context to subsequent procs that because of OP_RETURN the script will fail 
-          set opret 1
+          set flags [expr $flags | 1]
         }
       }
+      set flags [expr $flags | 2]
     }
   }
   
@@ -614,7 +624,7 @@ if {$ALLDONE == 0} {
                   }
   }
 
-                  if { ![decodeParse $opcode $nscriptbytes "ScriptSig"] } {
+                  if { ![decodeParse $opcode $nscriptbytes] } {
                     set exitMsg [format "Exit: ScriptSig decodeParse fail Tx: %d  input %d " $tx $k]
                     set ALLDONE 1
                     continue
@@ -668,7 +678,7 @@ if {$ALLDONE == 0} {
                 }
               }
   }
-              if { ![decodeParse $opcode $nscriptbytes "ScriptPubKey" $sats] } {
+              if { ![decodeParse $opcode $nscriptbytes $sats] } {
                 set exitMsg [format "Exit: ScriptPubKey decodeParse fail Tx: %d  output %d " $tx $k]
                 set ALLDONE 1
                 continue
@@ -706,8 +716,9 @@ if {$ALLDONE == 0} {
           }         ; # Section Witness data
         }           ; # process Segwit data
 
-        if {$ALLDONE == 0} {uint32 "nLockTime"} 
-
+        if {$ALLDONE == 0} {
+          uint32 "nLockTime"
+        } 
       } ; # Section single transaction
     } ; # for each transaction
   } ; # Section all transactions
