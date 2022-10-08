@@ -538,10 +538,10 @@ set debugMsgs {}
 set DEBUG 1
 #end debug setup
 
-
 set null ""
 set exitMsg [format "Exit: normal"]
 set ALLDONE 0
+set szFile [len]
 
 # BTC Magic is 4 bytes (0xF9BEB4D9) but it is more convenient to treat the 4 bytes as a little endian uint32.
 set BTCMagic 0xD9B4BEF9
@@ -575,6 +575,7 @@ if {[uint32] != $BTCMagic} {
 if {$ALLDONE == 0} {
   # There may be hundreds of transactions. Make a collapsed section to keep the overview initially brief.
   section -collapsed "TX COUNT $blockTxnum"  {
+    set Coinbase 1
     for {set tx 0} {$tx < $blockTxnum && $ALLDONE == 0} {incr tx} {
       section -collapsed "Transaction $tx" {     
         uint32 -hex "Tx version"
@@ -601,28 +602,36 @@ if {$ALLDONE == 0} {
         # process the inputs.
         section -collapsed "INPUT COUNT $nInputs"  {
           for {set k 0} {$k < $nInputs && $ALLDONE == 0} {incr k} {  
-            section "Input $k" {
+            set secName [format "Input %d" $k]
+            if $Coinbase {
+              set secName "Coinbase"
+            }
+            section $secName {
               bytes 32  "UTXO"
               uint32    "index"
               set nscriptbytes [getVarint "ScriptSig len"]
+              if {$nscriptbytes < 0  ||  $nscriptbytes > $szFile} {
+                set exitMsg [format "Exit: Input nscriptbytes=%d is bogus/ Tx=%d input=%d" $nscriptbytes $tx $k]
+                set ALLDONE 1
+                continue
+              }
               if {$nscriptbytes > 0} {
-                # if it's the Coinbase transaction and the first script byte is 0x3
-                # then the next 3 bytes are the block height. must be 1st transaction
+                # Check for block height. If it's the Coinbase transaction and the first script byte 
+                # is 0x3 then the next 3 bytes are the block height. It must be 1st transaction
                 # and 1st input
-                set bheight [uint8]
-                if {$tx == 0 && $k == 0 && $bheight == 3} { 
-                  uint24 "height"
-                  move -3 
-                } 
-                # move back to beginning of script 
-                move -1
-                bytes $nscriptbytes "ScriptSig"
-                if {$nscriptbytes < 0} {
-                  set exitMsg [format "Exit: OInput nscriptbytes (%d) is bogus Tx: %d input %d" $nscriptbytes $tx $k]
-                  set ALLDONE 1
-                  continue
+                if $Coinbase {
+                  set bheight [uint8]
+                  if {$bheight == 3} { 
+                    uint24 "height"
+                    move -3 
+                  } 
+                  # Move back to beginning of script and start over.
+                  move -1
                 }
-                if {$tx != 0  ||  $k != 0} {
+                bytes $nscriptbytes "ScriptSig"
+                
+                # Process the script if it's not the Coinbase input.
+                if !$Coinbase {
                   move -$nscriptbytes
                   set idSPK [hex $nscriptbytes]
                   set opcode [parseScript $nscriptbytes $idSPK]
@@ -660,7 +669,9 @@ if {$ALLDONE == 0} {
             } 
           }
         }  
-    
+        
+        if $Coinbase {set Coinbase 0}
+        
         # outputs
         set nOutputs [getVarint]
       
@@ -672,8 +683,8 @@ if {$ALLDONE == 0} {
               move -8
               uint64 "Satoshi"
               set nscriptbytes [getVarint "ScriptPubKey len"]
-              if {$nscriptbytes <= 0} {
-                set exitMsg [format "Exit: Output nscriptbytes (%d) is bogus Tx: %d output %d" $nscriptbytes $tx $k]
+              if {$nscriptbytes <= 0  ||  $nscriptbytes > $szFile} {
+                set exitMsg [format "Exit: Output nscriptbytes=%d is bogus Tx=%d output=%d" $nscriptbytes $tx $k]
                 set ALLDONE 1
                 continue
               }
@@ -711,9 +722,16 @@ if {$ALLDONE == 0} {
                 set nwitstack [getVarint "STACK COUNT"]
                 section -collapsed "Stack"  {
                   for {set l 0} {$l < $nwitstack} {incr l} {  
-                    set nscriptbytes [getVarint "item len"] 
+                    set ilabel [format "Item %d length" [expr $l + 1]]
+                    set nscriptbytes [getVarint $ilabel] 
+                    if {$nscriptbytes < 0  ||  $nscriptbytes > $szFile} {
+                      set exitMsg [format "Exit: Witness nscriptbytes=%d is bogus Tx=%d input=%d item=%d" $nscriptbytes $tx $k $l]
+                      set ALLDONE 1
+                      continue
+                    }
                     if {$nscriptbytes > 0 } {
-                      bytes $nscriptbytes "Stack item"    
+                      set ilabel [format "Item %d" [expr $l + 1]]
+                      bytes $nscriptbytes $ilabel    
                       move -$nscriptbytes
                       section -collapsed "Decode" {
                         set wType [decodeStack $nscriptbytes]
