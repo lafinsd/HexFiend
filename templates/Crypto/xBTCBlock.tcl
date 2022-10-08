@@ -3,35 +3,32 @@
 #
 #   Bitcoin Core blk*.dat files begin with 4 Magic bytes. These Magic bytes serve as a preamble to each block 
 #   in the blk*.dat file. When invoked this template will align correctly on the initial block in the blk*.dat
-#   file. Different blocks can be examined by using the Hex Fiend 'Anchor Template at Offset' feature and anchoring 
-#   on any Magic bytes in the file.
-
+#   file which begins with the Magic bytes. Different blocks can be examined by using the Hex Fiend 'Anchor 
+#   Template at Offset' feature and anchoring on any Magic bytes in the file.
+#
 #   By default ScriptSig, ScriptPubKey, and Witness data are simply labeled as Hex Fiend byte fields. Without using
-#   the expansions cited below this Template simply displays the raw data for each Transaction in the block. Additional 
+#   the expansions cited below this Template displays the raw data for each Transaction in the block. Additional 
 #   options for these data are avaialbale as follows. 
 #
-#     For each Transaction in the block this template will try and decode the contents of ScriptSig and ScriptPubKey 
-#     accompanying inputs and outputs, respectively. After any non-null Hex Fiend byte field there will be a collapsed 
-#     Hex Fiend Section called 'Decode'. Expanding this section will reveal a labeled version of the respective stack 
-#     content.
-
-#     For Witness data there may be multiple items for each input. Each stack item for each input is displayed as a 
-#     Hex Fiend byte field. There is a separate 'Decode' Section for each item for each input.
+#     For each Transaction in the block this template will try and decode the contents of ScriptSigs and ScriptPubKeys 
+#     accompanying inputs and outputs, respectively. Any non-empty ScriptSig or ScriptPubKey will be displayed as a
+#     Hex Fiend byte field, Following that there will be a collapsed Hex Fiend Section called 'Decode'. Expanding
+#     this Section will reveal a labeled version of the respective script content.
 #
-#     The newest additions to Bitcoin Core (v 23.0.0) support Taproot. The decodings implemented here attempt to 
-#     support P2TR 'key path' ScriptPubKey entries and Schnorr signatures in Witness data. P2TR 'script path' Witness 
-#     data are not yet supported here.
+#     For Witness data there may be multiple items for each input. Each stack item for each input is displayed 
+#     as a Hex Fiend byte field. There is a separate 'Decode' Section for each non-empty item for each input.
 #
-# This Template is offered AS-IS. The 'Decode' sections are best effort. Additions and corrections welcomed.
+# This Template is offered AS-IS. The 'Decode' sections are best effort. To correctly interpret the context of a 
+# Transaction requires examining the UTXO of each input. Examining UTXOs is beyond the scope of this Template. 
 #
-# NOTE:  This Template will NOT run efficiently on machines earlier than M1 or M2 laptops.
+# Additions and corrections welcomed.
+#
 
 
 
 # Return a BTC varint value. Presence of an argument causes the varint to be displayed as a Hex Fiend 
 # field with the argument as the label. The file pointer is left at the first byte past the varint.
 proc getVarint {{label ""}} {
-  
     # Read the indicator byte
     set val [uint8]
     
@@ -156,7 +153,6 @@ proc decodeSig {} {
 }
 
 proc isSignature {len}  {
-
   set curpos 0
   set DER [uint8]
   incr curpos
@@ -204,12 +200,11 @@ proc isSignature {len}  {
 
 # This proc tries to interpret contents of a Witness stack element. The witness stack elements each contain data whose length is
 # specified by a preceeding byte count. Generally the data are not script though the data might represent an elemental structure
-# like a signature or public key. This proc is also used to process ScriptSig and ScriptPubKey trying to interpret data pushed 
-# onto the stack. Typically in this case the data are elemental structures.
+# like a signature or public key. This proc is also used to process ScriptSig and ScriptPubKey objects trying to interpret data  
+# pushed onto the stack. Typically in this case the data are elemental structures.
 #
 # this proc leaves the file pointer at the byte after the length spec.
 proc decodeStack {len} {
-
   if {$len == 0} {
     set type "stOP_0"
   } else {
@@ -246,8 +241,23 @@ proc decodeStack {len} {
   return $type
 }
 
-proc getOP_CODE {string idx} {
+# Grab byte count for each of OP_PUSHDATA[1,2,4]. Context provided in proc call.
+proc getPDBCount {string idx bytes} {
+  set retval  0
+  set shftcnt 0
+  set tmpnum  0
+  
+  for {set i 0} {$i < $bytes} {incr i} { 
+    incr idx
+    set val [string index $string $idx][string index $string [incr idx]]
+    scan $val %x tmpnum
+    set retval [expr $retval + [expr $tmpnum<<$shftcnt]]
+    incr shftcnt 8
+  }
+  return $retval
+}
 
+proc getOP_CODE {string idx} {
   set ncodes { \
           "00" \
           "4C" \
@@ -259,8 +269,10 @@ proc getOP_CODE {string idx} {
           "87" \
           "A9" \
           "AC" \ 
+          "AD" \
           "AE" \   
           "AF" \
+          "BA" \
        }
        
   set mcodes { \
@@ -274,13 +286,14 @@ proc getOP_CODE {string idx} {
           "OP_EQUAL" \
           "OP_HASH160" \
           "OP_CHECKSIG" \    
+          "OP_CHKSIGVRFY" \
           "OP_CHECKMULTISIG" \
           "OP_CHKMULTISIGVRFY" \
+          "OP_CHECKSIGADD" \
        }
        
   set retval  "OP_IDK"
   set auxval1 0   ; # Parameter of opcode
-  set auxval2 0   ; # Location in string
   
   set opcode [string index $string $idx][string index $string [incr idx]]
   scan $opcode %x numericOC
@@ -289,63 +302,68 @@ proc getOP_CODE {string idx} {
   if {$numericOC > 0  &&  $numericOC < 76} {
     set retval "OP_PUSH"
     set auxval1 $numericOC
-    set auxval2 [expr $idx/2]
   } elseif {$numericOC > 80  &&  $numericOC < 97} {
     set retval "OP_1-16"
     set auxval1 [expr {$numericOC - 80}]
-    set auxval2 [expr $idx/2]
   } else {
     # OK to now search the list
     set indx [lsearch $ncodes $opcode]
     if {$indx >= 0} {
       set retval [lindex $mcodes $indx]
     }
-    set auxval2 [expr $idx/2]
   }
   
-  # Post processing for special cases
+  # Post processing for OP_PUSHDATAx special cases where the info after the opcode is the number of bytes to push.
+  # Similar to varint. The opcode may specify different size count objects (1, 2, or 4 bytes).
   if {$retval == "OP_PUSHDATA1"} {
-    incr idx 
-    set opcode [string index $string $idx][string index $string [incr idx]]
-    scan $opcode %x numericOC
+    set numericOC [getPDBCount $string $idx 1]
+    incr idx 2
     set auxval1 $numericOC
-    set auxval2 [expr $idx/2]
-  } elseif {$retval == "OP_PUSHDATA2" ||  $retval == "OP_PUSHDATA4"} {
-    # These are not yet supported. Need to add processing of the multiple-byte length spec. Default to IDK
-    set retval "OP_IDK"
+  } elseif {$retval == "OP_PUSHDATA2"} {
+    set numericOC [getPDBCount $string $idx 2]
+    incr idx 4
+    set auxval1 $numericOC
+  } elseif {$retval == "OP_PUSHDATA4"} {
+    set numericOC [getPDBCount $string $idx 4]
+    incr idx 8
+    set auxval1 $numericOC
   }
   
   if {$retval == "OP_IDK"} {
     set auxval1 $opcode
-    set auxval2 [expr $idx/2]
   }
   
-  return [list $retval $auxval1 $auxval2]
+  return [list $retval $auxval1]
 }
 
+# Return a list of op codes from a stream previosuly read in. If the opcode pushes data the data are skipped to
+# get to the next opcode.
 proc parseScript {len script}  {
-
-  set pos [expr $len * 2 + 2]
+  set last [expr $len * 2 + 2]
   set opcode {}
   set tmplist {}
   
-    for {set i 2} {$i < $pos} {incr i 2} {
+    for {set i 2} {$i < $last} {incr i 2} {
       set opcode [getOP_CODE $script $i]
 
-      lassign $opcode cmd auxval1 auxval2
+      lassign $opcode cmd auxval1
       lappend tmplist $opcode
     
-      if {$cmd == "OP_IDK"} {return $tmplist}
-      if {$cmd == "OP_PUSH"} {
-        # skip over the bytes pushed
-        incr i [expr $auxval1*2]
+      if {$cmd == "OP_IDK"} {
+        return $tmplist
       }
-      if {$cmd == "OP_PUSHDATA1"} {
-        # skip over the byte count and the bytes pushed
+      
+      # Skip over the bytes pushed for OP_PUSH or OP_PUSHDATAx and the byte count (for OP_PUSHDATAx). 
+      if {$cmd == "OP_PUSH"} {
+        incr i [expr $auxval1*2]
+      } elseif {$cmd == "OP_PUSHDATA1"} {
         incr i [expr $auxval1*2 + 2]
+      } elseif {$cmd == "OP_PUSHDATA2"} {
+        incr i [expr $auxval1*2 + 4]
+      } elseif {$cmd == "OP_PUSHDATA4"} {
+        incr i [expr $auxval1*2 + 8]
       }
     }
-
     return $tmplist
 }
 
@@ -406,21 +424,12 @@ proc showStack {type len {flags 0}} {
     "stOP1TRPUBK" {
       # Version 1 SegWit: Taproot
       showSpecial "OP_1" 32 "<P2TR PubKey>" $flags
-#      uint8 "OP_1"
-#      uint8 "OP_PUSH"
-#      bytes 32 "<P2TR PubKey>"
     }
     "stOP0HASH20" {
       showSpecial "OP_0" 20 "<PubKey hash>" $flags
-#      uint8 "OP_0"
-#      uint8 "OP_PUSH"
-#      bytes 20 "<PubKey hash>"
     }
     "stOP0HASH32" {
       showSpecial "OP_0" 32 "<Script hash>" $flags
-#      uint8 "OP_0"
-#      uint8 "OP_PUSH"
-#      bytes 32 "<Script hash>"
     }
     "stOP_0" {
       move -1
@@ -447,9 +456,8 @@ proc showStack {type len {flags 0}} {
   return $retval
 }
 
-# Display script detail for each opcode discovered in ScriptSig or ScriptPubKey item.
+# Display script detail for each opcode discovered in ScriptSig or ScriptPubKey.
 proc decodeParse {opcodes len {sats 0}} {
-
   move -$len
   set done 0
   set retval 1
@@ -473,10 +481,17 @@ proc decodeParse {opcodes len {sats 0}} {
           uint8 $ostr
         }
         set flags [expr $flags | 2]
-      } elseif {$code == "OP_PUSHDATA1"} {
+      } elseif {$code == "OP_PUSHDATA1" || $code == "OP_PUSHDATA2" || $code == "OP_PUSHDATA4"} {
         set flags [expr $flags | 2]
         uint8 $ostr
-        uint8 "push"
+        if {$code == "OP_PUSHDATA1"} {
+          set size "uint8"
+        } elseif {$code == "OP_PUSHDATA2"} {
+          set size "uint16"
+        } else {
+          set size "uint32"
+        }
+        $size "push"
         set type [decodeStack $a1]
         set retval [showStack $type $a1 $flags]
         if {$retval == 0} {set done 1}
@@ -511,12 +526,12 @@ proc decodeParse {opcodes len {sats 0}} {
 
 #debug setup
 set op_ss  {}
-set ssTarget {}
+set ssTarget {"OP_CHECKSIGADD"}
 set nssTar [llength $ssTarget]
 
 
 set op_spk {}
-set spkTarget {}
+set spkTarget {"OP_CHECKSIGADD"}
 set nspkTar [llength $spkTarget]
 
 set debugMsgs {}
