@@ -11,8 +11,8 @@
 #   options for these data are avaialbale as follows. 
 #
 #     For each Transaction in the block this template will try and decode the contents of ScriptSigs and ScriptPubKeys 
-#     accompanying inputs and outputs, respectively. Any non-empty ScriptSig or ScriptPubKey will be displayed as a
-#     Hex Fiend byte field, Following that there will be a collapsed Hex Fiend Section called 'Decode'. Expanding
+#     accompanying inputs and outputs, respectively. Any ScriptPubKey or non-empty ScriptSig will be displayed as a
+#     Hex Fiend byte field. Following that there will be a collapsed Hex Fiend Section called 'Decode'. Expanding
 #     this Section will reveal a labeled version of the respective script content.
 #
 #     For Witness data there may be multiple items for each input. Each stack item for each input is displayed 
@@ -198,7 +198,7 @@ proc isSignature {len}  {
   return 1
 }
 
-# This proc tries to interpret contents of a Witness stack element. The witness stack elements each contain data whose length is
+# This proc tries to interpret contents of a Witness stack item. The wWtness stack items each contain data whose length is
 # specified by a preceeding byte count. Generally the data are not script though the data might represent an elemental structure
 # like a signature or public key. This proc is also used to process ScriptSig and ScriptPubKey objects trying to interpret data  
 # pushed onto the stack. Typically in this case the data are elemental structures.
@@ -257,16 +257,16 @@ proc getPDBCount {string idx bytes} {
   return $retval
 }
 
-proc getOP_CODE {string idx} {
-  set ncodes { \
+proc getOP_CODE {} {
+  set xcodes { \
           "00" \
           "4C" \
           "4D" \
           "4E" \
           "6A" \
           "76" \
-          "88" \
           "87" \
+          "88" \
           "A9" \
           "AC" \ 
           "AD" \
@@ -275,6 +275,22 @@ proc getOP_CODE {string idx} {
           "BA" \
        }
        
+   set ncodes { \
+              0 \
+             76 \
+             77 \
+             78 \
+            106 \
+            118 \
+            135 \
+            136 \
+            169 \
+            172 \ 
+            173 \
+            174 \   
+            175 \
+            186 \
+        }
   set mcodes { \
           "OP_0" \
           "OP_PUSHDATA1" \
@@ -282,8 +298,8 @@ proc getOP_CODE {string idx} {
           "OP_PUSHDATA4" \
           "OP_RETURN" \
           "OP_DUP" \
-          "OP_EQUALVERIFY" \
           "OP_EQUAL" \
+          "OP_EQUALVERIFY" \
           "OP_HASH160" \
           "OP_CHECKSIG" \    
           "OP_CHKSIGVRFY" \
@@ -293,10 +309,11 @@ proc getOP_CODE {string idx} {
        }
        
   set retval  "OP_IDK"
-  set auxval1 0   ; # Parameter of opcode
+  set auxval1 0   ; # skip parameter for push opcodes
   
-  set opcode [string index $string $idx][string index $string [incr idx]]
-  scan $opcode %x numericOC
+#  set opcode [string index $string $idx][string index $string [incr idx]]
+#  scan $opcode %x numericOC
+  set numericOC [uint8]
  
   # First check for opcodes that do not have a singular representation
   if {$numericOC > 0  &&  $numericOC < 76} {
@@ -304,10 +321,10 @@ proc getOP_CODE {string idx} {
     set auxval1 $numericOC
   } elseif {$numericOC > 80  &&  $numericOC < 97} {
     set retval "OP_1-16"
-    set auxval1 [expr {$numericOC - 80}]
+    set auxval1 [expr $numericOC - 80]
   } else {
     # OK to now search the list
-    set indx [lsearch $ncodes $opcode]
+    set indx [lsearch $ncodes $numericOC]
     if {$indx >= 0} {
       set retval [lindex $mcodes $indx]
     }
@@ -316,21 +333,15 @@ proc getOP_CODE {string idx} {
   # Post processing for OP_PUSHDATAx special cases where the info after the opcode is the number of bytes to push.
   # Similar to varint. The opcode may specify different size count objects (1, 2, or 4 bytes).
   if {$retval == "OP_PUSHDATA1"} {
-    set numericOC [getPDBCount $string $idx 1]
-    incr idx 2
-    set auxval1 $numericOC
+    set auxval1 [uint8]
   } elseif {$retval == "OP_PUSHDATA2"} {
-    set numericOC [getPDBCount $string $idx 2]
-    incr idx 4
-    set auxval1 $numericOC
+    set auxval1 [uint16]
   } elseif {$retval == "OP_PUSHDATA4"} {
-    set numericOC [getPDBCount $string $idx 4]
-    incr idx 8
-    set auxval1 $numericOC
+    set auxval1 [uint32]
   }
   
   if {$retval == "OP_IDK"} {
-    set auxval1 $opcode
+    set auxval1 $numericOC
   }
   
   return [list $retval $auxval1]
@@ -338,13 +349,12 @@ proc getOP_CODE {string idx} {
 
 # Return a list of op codes from a stream previosuly read in. If the opcode pushes data the data are skipped to
 # get to the next opcode.
-proc parseScript {len script}  {
-  set last [expr $len * 2 + 2]
+proc parseScript {len}  {
   set opcode {}
   set tmplist {}
   
-    for {set i 2} {$i < $last} {incr i 2} {
-      set opcode [getOP_CODE $script $i]
+    for {set i 0} {$i < $len} {incr i} {
+      set opcode [getOP_CODE]
 
       lassign $opcode cmd auxval1
       lappend tmplist $opcode
@@ -353,15 +363,19 @@ proc parseScript {len script}  {
         return $tmplist
       }
       
-      # Skip over the bytes pushed for OP_PUSH or OP_PUSHDATAx and the byte count (for OP_PUSHDATAx). 
+      # Skip over the bytes pushed for OP_PUSH or OP_PUSHDATAx 
       if {$cmd == "OP_PUSH"} {
-        incr i [expr $auxval1*2]
+        incr i $auxval1
+        move $auxval1
       } elseif {$cmd == "OP_PUSHDATA1"} {
-        incr i [expr $auxval1*2 + 2]
+        incr i [expr $auxval1 + 1]
+        move $auxval1
       } elseif {$cmd == "OP_PUSHDATA2"} {
-        incr i [expr $auxval1*2 + 4]
+        incr i [expr $auxval1 + 2]
+        move $auxval1
       } elseif {$cmd == "OP_PUSHDATA4"} {
-        incr i [expr $auxval1*2 + 8]
+        incr i [expr $auxval1 + 4]
+        move $auxval1
       }
     }
     return $tmplist
@@ -467,7 +481,7 @@ proc decodeParse {opcodes len {sats 0}} {
   section -collapsed "Decode" {
     for {set i 0} {$i < $llen  &&  $done == 0} {incr i} {
       set cur [lindex $opcodes $i]
-      lassign $cur code a1 a2
+      lassign $cur code a1
       set ostr $code
 
       if {$code == "OP_1-16"} { 
@@ -526,12 +540,12 @@ proc decodeParse {opcodes len {sats 0}} {
 
 #debug setup
 set op_ss  {}
-set ssTarget {"OP_CHECKSIGADD"}
+set ssTarget {}
 set nssTar [llength $ssTarget]
 
 
 set op_spk {}
-set spkTarget {"OP_CHECKSIGADD"}
+set spkTarget {}
 set nspkTar [llength $spkTarget]
 
 set debugMsgs {}
@@ -572,12 +586,13 @@ if {[uint32] != $BTCMagic} {
   set blockTxnum [getVarint] 
 }
 
-if {$ALLDONE == 0} {
+if !$ALLDONE {
   # There may be hundreds of transactions. Make a collapsed section to keep the overview initially brief.
   section -collapsed "TX COUNT $blockTxnum"  {
     set Coinbase 1
+    set iscb "(Coinbase)"
     for {set tx 0} {$tx < $blockTxnum && $ALLDONE == 0} {incr tx} {
-      section -collapsed "Transaction $tx" {     
+      section -collapsed "Transaction $tx $iscb" {     
         uint32 -hex "Tx version"
   
         # if next varint is 0 then we've read a (single byte) marker and it's a SegWit transaction. 
@@ -602,23 +617,18 @@ if {$ALLDONE == 0} {
         # process the inputs.
         section -collapsed "INPUT COUNT $nInputs"  {
           for {set k 0} {$k < $nInputs && $ALLDONE == 0} {incr k} {  
-            set secName [format "Input %d" $k]
-            if $Coinbase {
-              set secName "Coinbase"
-            }
-            section $secName {
+            section "Input $k" {
               bytes 32  "UTXO"
               uint32    "index"
               set nscriptbytes [getVarint "ScriptSig len"]
               if {$nscriptbytes < 0  ||  $nscriptbytes > $szFile} {
-                set exitMsg [format "Exit: Input nscriptbytes=%d is bogus/ Tx=%d input=%d" $nscriptbytes $tx $k]
+                set exitMsg [format "Exit: Bogus ScriptSig nscriptbytes=%d  Tx=%d input=%d" $nscriptbytes $tx $k]
                 set ALLDONE 1
                 continue
               }
               if {$nscriptbytes > 0} {
                 # Check for block height. If it's the Coinbase transaction and the first script byte 
-                # is 0x3 then the next 3 bytes are the block height. It must be 1st transaction
-                # and 1st input
+                # is 0x3 then the next 3 bytes are the block height.
                 if $Coinbase {
                   set bheight [uint8]
                   if {$bheight == 3} { 
@@ -633,8 +643,7 @@ if {$ALLDONE == 0} {
                 # Process the script if it's not the Coinbase input.
                 if !$Coinbase {
                   move -$nscriptbytes
-                  set idSPK [hex $nscriptbytes]
-                  set opcode [parseScript $nscriptbytes $idSPK]
+                  set opcode [parseScript $nscriptbytes]
   if {$DEBUG} {
                   # Look for target opcodes in list of those found.
                   for {set n 0} {$n < $nssTar} {incr n} {
@@ -653,6 +662,9 @@ if {$ALLDONE == 0} {
                     set ALLDONE 1
                     continue
                   } 
+                } else {
+                    set Coinbase 0
+                    set iscb ""
                 }
               } else {
   if {$DEBUG} {
@@ -664,13 +676,10 @@ if {$ALLDONE == 0} {
                 }
   }  
               } 
-
               uint32 -hex "nSequence"
             } 
           }
         }  
-        
-        if $Coinbase {set Coinbase 0}
         
         # outputs
         set nOutputs [getVarint]
@@ -684,14 +693,13 @@ if {$ALLDONE == 0} {
               uint64 "Satoshi"
               set nscriptbytes [getVarint "ScriptPubKey len"]
               if {$nscriptbytes <= 0  ||  $nscriptbytes > $szFile} {
-                set exitMsg [format "Exit: Output nscriptbytes=%d is bogus Tx=%d output=%d" $nscriptbytes $tx $k]
+                set exitMsg [format "Exit: Bogus ScriptPubKey nscriptbytes=%d Tx=%d output=%d" $nscriptbytes $tx $k]
                 set ALLDONE 1
                 continue
               }
               bytes $nscriptbytes "ScriptPubKey"
               move -$nscriptbytes
-              set idSPK [hex $nscriptbytes]
-              set opcode [parseScript $nscriptbytes $idSPK]
+              set opcode [parseScript $nscriptbytes]
   if {$DEBUG} {
               # Look for target opcodes in list of those found.
               for {set n 0} {$n < $nspkTar} {incr n} {
@@ -725,7 +733,7 @@ if {$ALLDONE == 0} {
                     set ilabel [format "Item %d length" [expr $l + 1]]
                     set nscriptbytes [getVarint $ilabel] 
                     if {$nscriptbytes < 0  ||  $nscriptbytes > $szFile} {
-                      set exitMsg [format "Exit: Witness nscriptbytes=%d is bogus Tx=%d input=%d item=%d" $nscriptbytes $tx $k $l]
+                      set exitMsg [format "Exit: Bogus Witness stack nscriptbytes=%d Tx=%d input=%d item=%d" $nscriptbytes $tx $k $l]
                       set ALLDONE 1
                       continue
                     }
