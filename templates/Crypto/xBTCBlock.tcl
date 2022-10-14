@@ -149,7 +149,7 @@ proc decodeSig {} {
     bytes $s "s"
     uint8 "SIGHASH flag"
   }
-  return 1
+  return
 }
 
 proc isSignature {len}  {
@@ -198,24 +198,28 @@ proc isSignature {len}  {
   return 1
 }
 
-# This proc tries to interpret contents of a Witness stack item. The wWtness stack items each contain data whose length is
-# specified by a preceeding byte count. Generally the data are not script though the data might represent an elemental structure
-# like a signature or public key. This proc is also used to process ScriptSig and ScriptPubKey objects trying to interpret data  
-# pushed onto the stack. Typically in this case the data are elemental structures.
+# This proc tries to interpret contents of a Witness stack item. The Witness stack items each contain data whose length is
+# specified by a preceeding byte count. We don't look for opcodes in these data because generally the data are not script 
+# though the data might represent an elemental structure like a signature or public key. This proc is also used to process 
+# ScriptSig and ScriptPubKey objects trying to interpret data pushed onto the stack. Typically in this case the data 
+# are elemental structures.
 #
 # this proc leaves the file pointer at the byte after the length spec.
 proc decodeStack {len} {
   if {$len == 0} {
     set type "stOP_0"
+  } elseif {$len == 20} {
+    # Data is probably pushed hash. Don't try to interpret it. It's OK if we miss something we could have figured out.
+    set type "stIDK"
   } else {
+    # Try to guess the object. Key off the first two bytes. Could possibly interpret something we shouldn't.
     set op  [uint8]
     set op1 [uint8]
     move -2
     
     if {$op == 0x30 && $len >= 67 &&  $len <= 73} {
       set type "stDER"
-      set rv [isSignature $len]
-      if {$rv == 0} {
+      if {![isSignature $len]} {
         set type "stbadDER"
       }
     } elseif {$op == 81 && $op1 == 32} {
@@ -231,8 +235,10 @@ proc decodeStack {len} {
       # An uncompressed public key
       set type "stuPK"
     } elseif {$op == 0 && $op1 == 20} {
+      # Version 0 SegWit
       set type "stOP0HASH20"
     } elseif {$op == 0 && $op1 == 32} {
+      # Version 0 SegWit
       set type "stOP0HASH32"
     } else {
       set type "stIDK"
@@ -291,6 +297,7 @@ proc getOP_CODE {} {
             175 \
             186 \
         }
+             
   set mcodes { \
           "OP_0" \
           "OP_PUSHDATA1" \
@@ -404,14 +411,12 @@ proc showStack {type len {flags 0}} {
                    
   switch $type {
     "stbadDER" {
-      entry "short sig fails" $type
+      entry "DER hint fails" $type
       set retval 0
     }
     "stDER" {
-      # Might be a DER signature
-      if {![decodeSig]} {
-        set retval 0
-      }
+      # Object already verified as a DER signature. Just display it.
+      decodeSig
     }
     "stOP_81-96" {
       # Might be a multisig
@@ -419,7 +424,7 @@ proc showStack {type len {flags 0}} {
         if {$len == 20} {
           bytes $len "<hash>"
         } else {
-          bytes $len "nonMS bytes"
+          bytes $len "nonMS data"
         }
       }
     }
