@@ -200,15 +200,20 @@ proc isSignature {len}  {
 
 # This proc tries to interpret contents of a Witness stack item. The Witness stack items each contain data whose length is
 # specified by a preceeding byte count. We don't look for opcodes in these data because generally the data are not script 
-# though the data might represent an elemental structure like a signature or public key. This proc is also used to process 
-# ScriptSig and ScriptPubKey objects trying to interpret data pushed onto the stack. Typically in this case the data 
-# are elemental structures.
+# though the data might represent an elemental structure like a signature or public key. 
 #
+# This proc is also used to process ScriptSig and ScriptPubKey objects trying to interpret data pushed onto the stack. 
+# Typically in this case the data are elemental structures. Some of the potential values here are objects that would 
+# not be found as a Witness stack item.
+# 
 # this proc leaves the file pointer at the byte after the length spec.
 proc decodeStack {len} {
-  if {$len == 0} {
-    set type "stOP_0"
-  } elseif {$len == 20} {
+  global tx
+  global debugMsgs
+  global kcnt
+  global CONTEXT
+  
+  if {$len == 20} {
     # Data is probably pushed hash. Don't try to interpret it. It's OK if we miss something we could have figured out.
     set type "stIDK"
   } else {
@@ -220,12 +225,17 @@ proc decodeStack {len} {
     if {$op == 0x30 && $len >= 67 &&  $len <= 73} {
       set type "stDER"
       if {![isSignature $len]} {
-        set type "stbadDER"
+        set type "stbadDERSig"
       }
-    } elseif {$op == 81 && $op1 == 32} {
-      # Version 1 SegWit: Taproot
-      set type "stOP1TRPUBK"
-    } elseif {$op >= 81 && $op <= 96} {
+    } elseif {$op == 81} {
+      if {$op1 == 32} {
+        # Version 1 SegWit: Taproot. 
+        set type "stOP1TRPUBK"
+      } else {
+        # Simple numeric value
+        set type "stOP_81-96"
+      }
+    } elseif {$op >= 82 && $op <= 96} {
       # Simple numeric value
       set type "stOP_81-96"
     } elseif {$len == 33 && ($op == 2  ||  $op == 3)} {
@@ -247,81 +257,40 @@ proc decodeStack {len} {
   return $type
 }
 
-# Grab byte count for each of OP_PUSHDATA[1,2,4]. Context provided in proc call.
-proc getPDBCount {string idx bytes} {
-  set retval  0
-  set shftcnt 0
-  set tmpnum  0
+proc initTemplate {} {
+  global opcodeTable {}
+  global opcodeTableLen
   
-  for {set i 0} {$i < $bytes} {incr i} { 
-    incr idx
-    set val [string index $string $idx][string index $string [incr idx]]
-    scan $val %x tmpnum
-    set retval [expr $retval + [expr $tmpnum<<$shftcnt]]
-    incr shftcnt 8
-  }
-  return $retval
+  set opcodeTable {  \
+      {0 "OP_0"} \
+     {76 "OP_PUSHDATA1"} \
+     {77 "OP_PUSHDATA2"} \
+     {78 "OP_PUSHDATA4"} \
+    {106 "OP_RETURN"} \
+    {118 "OP_DUP"} \
+    {135 "OP_EQUAL"} \
+    {136 "OP_EQUALVERIFY"} \
+    {169 "OP_HASH160"} \
+    {172 "OP_CHECKSIG"} \
+    {173 "OP_CHKSIGVRFY"} \
+    {174 "OP_CHECKMULTISIG"} \
+    {175 "OP_CHKMULTISIGVRFY"} \
+    {186 "OP_CHECKSIGADD"} \
+  }  
+  set opcodeTableLen [llength $opcodeTable]
+  return
 }
 
 proc getOP_CODE {} {
-  set xcodes { \
-          "00" \
-          "4C" \
-          "4D" \
-          "4E" \
-          "6A" \
-          "76" \
-          "87" \
-          "88" \
-          "A9" \
-          "AC" \ 
-          "AD" \
-          "AE" \   
-          "AF" \
-          "BA" \
-       }
-       
-   set ncodes { \
-              0 \
-             76 \
-             77 \
-             78 \
-            106 \
-            118 \
-            135 \
-            136 \
-            169 \
-            172 \ 
-            173 \
-            174 \   
-            175 \
-            186 \
-        }
-             
-  set mcodes { \
-          "OP_0" \
-          "OP_PUSHDATA1" \
-          "OP_PUSHDATA2" \
-          "OP_PUSHDATA4" \
-          "OP_RETURN" \
-          "OP_DUP" \
-          "OP_EQUAL" \
-          "OP_EQUALVERIFY" \
-          "OP_HASH160" \
-          "OP_CHECKSIG" \    
-          "OP_CHKSIGVRFY" \
-          "OP_CHECKMULTISIG" \
-          "OP_CHKMULTISIGVRFY" \
-          "OP_CHECKSIGADD" \
-       }
-       
+  global opcodeTable {}
+  global opcodeTableLen     
+     
   set retval  "OP_IDK"
+  set null ""
   set auxval1 0   ; # skip parameter for push opcodes
   
-#  set opcode [string index $string $idx][string index $string [incr idx]]
-#  scan $opcode %x numericOC
   set numericOC [uint8]
- 
+
   # First check for opcodes that do not have a singular representation
   if {$numericOC > 0  &&  $numericOC < 76} {
     set retval "OP_PUSH"
@@ -331,12 +300,12 @@ proc getOP_CODE {} {
     set auxval1 [expr $numericOC - 80]
   } else {
     # OK to now search the list
-    set indx [lsearch $ncodes $numericOC]
-    if {$indx >= 0} {
-      set retval [lindex $mcodes $indx]
+   set indx [lsearch -index 0 -inline $opcodeTable $numericOC]
+   if {$indx != ""} {
+      set retval [lindex $indx 1]
     }
   }
-  
+    
   # Post processing for OP_PUSHDATAx special cases where the info after the opcode is the number of bytes to push.
   # Similar to varint. The opcode may specify different size count objects (1, 2, or 4 bytes).
   if {$retval == "OP_PUSHDATA1"} {
@@ -410,7 +379,7 @@ proc showStack {type len {flags 0}} {
   set retval 1
                    
   switch $type {
-    "stbadDER" {
+    "stbadDERSig" {
       entry "DER hint fails" $type
       set retval 0
     }
@@ -449,10 +418,6 @@ proc showStack {type len {flags 0}} {
     }
     "stOP0HASH32" {
       showSpecial "OP_0" 32 "<Script hash>" $flags
-    }
-    "stOP_0" {
-      move -1
-      uint8 "OP_0" 
     }
     "stIDK" {
       # No specific clue to data on stack. There are a few cases we can guess.
@@ -521,7 +486,7 @@ proc decodeParse {opcodes len {sats 0}} {
         set retval [showStack $type $a1 $flags]
         if {$retval == 0} {set done 1}
       } elseif {$code == "OP_IDK"} {
-        entry "Decode Opcode" $cur
+        entry "Decode Opcode fail" $cur
         set retval 0
         set done 1
       } else {
@@ -548,19 +513,26 @@ set op_ss  {}
 set ssTarget {}
 set nssTar [llength $ssTarget]
 
-
 set op_spk {}
 set spkTarget {}
 set nspkTar [llength $spkTarget]
 
 set debugMsgs {}
 set DEBUG 1
+set CONTEXT "Init"
 #end debug setup
+
+
 
 set null ""
 set exitMsg [format "Exit: normal"]
 set ALLDONE 0
 set szFile [len]
+
+initTemplate
+#entry "opcode list len" $opcodeTableLen
+#entry "table" $opcodeTable
+#return
 
 # BTC Magic is 4 bytes (0xF9BEB4D9) but it is more convenient to treat the 4 bytes as a little endian uint32.
 set BTCMagic 0xD9B4BEF9
@@ -621,13 +593,14 @@ if !$ALLDONE {
       
         # process the inputs.
         section -collapsed "INPUT COUNT $nInputs"  {
-          for {set k 0} {$k < $nInputs && $ALLDONE == 0} {incr k} {  
-            section "Input $k" {
+set CONTEXT "Input"
+          for {set kcnt 0} {$kcnt < $nInputs && $ALLDONE == 0} {incr kcnt} {  
+            section "Input $kcnt" {
               bytes 32  "UTXO"
               uint32    "index"
               set nscriptbytes [getVarint "ScriptSig len"]
               if {$nscriptbytes < 0  ||  $nscriptbytes > $szFile} {
-                set exitMsg [format "Exit: Bogus ScriptSig nscriptbytes=%d  Tx=%d input=%d" $nscriptbytes $tx $k]
+                set exitMsg [format "Exit: Bogus ScriptSig nscriptbytes=%d  Tx=%d input=%d" $nscriptbytes $tx $kcnt]
                 set ALLDONE 1
                 continue
               }
@@ -656,14 +629,15 @@ if !$ALLDONE {
                     for {set m 0} {$m < [llength $opcode]} {incr m} {
                       set oc [lindex [lindex $opcode $m] 0]
                       if {$oc ==  $t} {
-                        lappend op_ss [list $tx $k $t]
+                        set aux [lindex [lindex $opcode $m] 1]
+                        lappend op_ss [list $tx $kcnt $t $aux]
                       }
                     }
                   }
   }
 
                   if { ![decodeParse $opcode $nscriptbytes] } {
-                    set exitMsg [format "Exit: ScriptSig decodeParse fail Tx: %d  input %d " $tx $k]
+                    set exitMsg [format "Exit: ScriptSig decodeParse fail Tx: %d  input %d " $tx $kcnt]
                     set ALLDONE 1
                     continue
                   } 
@@ -676,7 +650,7 @@ if !$ALLDONE {
                 for {set n 0} {$n < $nssTar} {incr n} {
                   set t [lindex $ssTarget $n] 
                   if {$t == ""} {
-                    lappend op_ss [list $tx $k "<null>"]
+                    lappend op_ss [list $tx $kcnt "<null>"]
                   }
                 }
   }  
@@ -691,14 +665,15 @@ if !$ALLDONE {
       
         # process the outputs
         section -collapsed "OUTPUT COUNT $nOutputs"  {
-          for {set k 0} {$k < $nOutputs && $ALLDONE == 0} {incr k} {
-            section "Output $k" {
+set CONTEXT "Output"
+          for {set kcnt 0} {$kcnt < $nOutputs && $ALLDONE == 0} {incr kcnt} {
+            section "Output $kcnt" {
               set sats [uint64]
               move -8
               uint64 "Satoshi"
               set nscriptbytes [getVarint "ScriptPubKey len"]
               if {$nscriptbytes <= 0  ||  $nscriptbytes > $szFile} {
-                set exitMsg [format "Exit: Bogus ScriptPubKey nscriptbytes=%d Tx=%d output=%d" $nscriptbytes $tx $k]
+                set exitMsg [format "Exit: Bogus ScriptPubKey nscriptbytes=%d Tx=%d output=%d" $nscriptbytes $tx $kcnt]
                 set ALLDONE 1
                 continue
               }
@@ -712,13 +687,14 @@ if !$ALLDONE {
                 for {set m 0} {$m < [llength $opcode]} {incr m} {
                   set oc [lindex [lindex $opcode $m] 0]
                   if {$oc ==  $t} {
-                    lappend op_spk [list $tx $k $t]
+                    set aux [lindex [lindex $opcode $m] 1]
+                    lappend op_spk [list $tx $kcnt $t $aux]
                   }
                 }
               }
   }
               if { ![decodeParse $opcode $nscriptbytes $sats] } {
-                set exitMsg [format "Exit: ScriptPubKey decodeParse fail Tx: %d  output %d " $tx $k]
+                set exitMsg [format "Exit: ScriptPubKey decodeParse fail Tx: %d  output %d " $tx $kcnt]
                 set ALLDONE 1
                 continue
               }         
@@ -730,15 +706,16 @@ if !$ALLDONE {
         if {$segwit} {
           section -collapsed "WITNESS DATA"  {
             # this is the witness data for each input
-            for {set k 0} {$k < $nInputs && $ALLDONE == 0} {incr k} {
-              section "Witness Input $k" {
+set CONTEXT "Witness"
+            for {set kcnt 0} {$kcnt < $nInputs && $ALLDONE == 0} {incr kcnt} {
+              section "Witness Input $kcnt" {
                 set nwitstack [getVarint "STACK COUNT"]
                 section -collapsed "Stack"  {
                   for {set l 0} {$l < $nwitstack} {incr l} {  
                     set ilabel [format "Item %d length" [expr $l + 1]]
                     set nscriptbytes [getVarint $ilabel] 
                     if {$nscriptbytes < 0  ||  $nscriptbytes > $szFile} {
-                      set exitMsg [format "Exit: Bogus Witness stack nscriptbytes=%d Tx=%d input=%d item=%d" $nscriptbytes $tx $k $l]
+                      set exitMsg [format "Exit: Bogus Witness stack nscriptbytes=%d Tx=%d input=%d item=%d" $nscriptbytes $tx $kcnt $l]
                       set ALLDONE 1
                       continue
                     }
@@ -749,7 +726,7 @@ if !$ALLDONE {
                       section -collapsed "Decode" {
                         set wType [decodeStack $nscriptbytes]
                         if {![showStack $wType $nscriptbytes]} { 
-                          set exitMsg [format "Exit: Witness showSrack fail Tx: %d  input %d " $tx $k]
+                          set exitMsg [format "Exit: Witness showSrack fail Tx: %d  input %d " $tx $kcnt]
                           set ALLDONE 1
                           continue
                         }
