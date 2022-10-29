@@ -1,26 +1,52 @@
-# Binary Template for Bitcoin Core Block content: expanded version
+# Binary Template for Bitcoin Core Block content: Extended version
 #   Process a single Bitcoin block contained in a Bitcoin Core blk*.dat file. 
 #
 #   Bitcoin Core blk*.dat files begin with 4 Magic bytes. These Magic bytes serve as a preamble to each block 
 #   in the blk*.dat file. When invoked this template will align correctly on the initial block in the blk*.dat
 #   file which begins with the Magic bytes. Different blocks can be examined by using the Hex Fiend 'Anchor 
-#   Template at Offset' feature and anchoring on any Magic bytes in the file.
+#   Template at Offset' feature and anchoring on any Magic bytes in the file before invoking the Template. 
+#   ScriptSig, ScriptPubKey, and Witness data are simply labeled as Hex Fiend byte fields. 
 #
-#   ScriptSig, ScriptPubKey, and Witness data are simply labeled as Hex Fiend byte fields. Additional options
-#   for these data are avaialbale as follows:
 #
-#     For each Transaction in the block this template will try and decode the contents of ScriptSigs and ScriptPubKeys 
-#     accompanying inputs and outputs, respectively. Any ScriptPubKey or non-empty ScriptSig will be displayed as a
-#     Hex Fiend byte field. Following that there will be a collapsed Hex Fiend Section called 'Decode'. Expanding
-#     this Section will reveal a labeled version of the respective script content.
+#   In this expanded version additional processing is available as follows:
 #
-#     For Witness data there may be multiple items for each input. Each stack item for each input is displayed 
-#     as a Hex Fiend byte field. There is a separate 'Decode' Section for each non-empty item for each input.
+#     For each Transaction in the block this Template will try and decode the Script in ScriptSigs and ScriptPubKeys 
+#     accompanying inputs and outputs, respectively. Each ScriptPubKey and non-empty ScriptSig will be displayed as a
+#     Hex Fiend byte field. Following each there will be a collapsed Hex Fiend Section called 'Decode'. Expanding
+#     this Section will reveal a labeled version of the respective Script content.
 #
-# This Template is offered AS-IS. The 'Decode' sections are best effort. To correctly interpret the complete context 
-# of a Transaction requires examining the UTXO of each input. Examining UTXOs is beyond the scope of this Template. 
+#     For Witness data there may be multiple stack items for each input. Each non-empty stack item for each input 
+#     is displayed as a Hex Fiend byte field. Witness stack items are not necessarily Script. If the stack item is 
+#     interpretable as Script there will be an additional 'Decode' Section for that item. There will also be a 
+#     'Decode' section if the stack item is interpretable as a construct such as a DER signature.
+#     
+#
+# This Template is offered AS-IS. The 'Decode' sections are best effort. 
+#
+# This template runs slowly on older machines such as my old Intel MBA (2019). Even on an M2 MBA there is a noticeable
+# delay when expanding the Transactions on newer blk*.dat files. The execution time on both older and newer machines is
+# reasonable for initial results with the collapsed Transactions. Expanding the Transactions section leads to a 
+# noticeable delay especially on older machines.
+#
+# To mitigate the performance delay the variables XTND_SS, XTND_SPK and XTND_WIT can be set to control extended decoding 
+# of ScriptSig, ScriptPubKey, and Witness data respectively. Set them to '1' to decode their data. Set them to '0' otherwise.
+# The speedup for not decoding is noticeable and can be dramatic on older machines if all three are '0'. As a practical 
+# matter with all three set to '0' the performance of this Extended Template is indistinguishable from the non-Extended 
+# Template version 'BTCBlock.tcl'.
 #
 
+
+####################################################
+set XTND_SS  1  ; # extended ScriptSig decoding
+set XTND_SPK 1  ; # extended ScriptPubKey decoding
+set XTND_WIT 1  ; # extended Witness decoding
+set XTND_SS_MASK   1
+set XTND_SPK_MASK  2
+set XTND_WIT_MASK  4
+set extendedVersion [expr $XTND_SS | \
+                    [expr ($XTND_SPK<<1)] | \
+                    [expr ($XTND_WIT<<2)]]
+####################################################
 
 
 # Return a BTC varint value. Presence of an argument causes the varint to be displayed as a Hex Fiend 
@@ -363,8 +389,7 @@ proc getSIGHASH_flag {flag} {
   if {$item == ""} {
     return "SIGHASH_UNSUP"
   }
-  set retval [lindex $item 1]
-  return $retval
+  return [lindex $item 1]
 }
 
 # Look for OpCode and map it to something interpretable for later display.
@@ -413,16 +438,16 @@ proc getOP_CODE {} {
 # File pointer left at end of the parsed script, i.e., 'len' bytes beyond the length spec, even on failed parse.
 proc parseScript {len}  {
   set OPCList {}
-  set i 0
   set retcode 0
   
+  set i 0
   while {$i < $len}  {
     set opcode [getOP_CODE]
     incr i
     lassign $opcode cmd auxval1
     
-    # Skip over the bytes pushed for OP_PUSH or OP_PUSHDATAx. The loop index increment must also account for byte count 
-    # field for OP_PUSHDATAx opcodes.
+    # Skip over the bytes pushed for OP_PUSH or OP_PUSHDATAx. The loop index increment must also account for byte count
+    # fields for the OP_PUSHDATAx opcodes.
     if {$cmd == "OP_PUSH"} {
       incr i $auxval1
       move $auxval1
@@ -436,12 +461,17 @@ proc parseScript {len}  {
       incr i [expr $auxval1 + 4]
       move $auxval1
     }
+    
     if {$i > $len} {
+      # The number of bytes processed in the presumed script exceeds the length of the byte string. Probably not a script. 
+      # Set the file pointer to the end of the string. We're done.
       move [expr $len - $i]
       set retcode 1
     } else {
       lappend OPCList $opcode
       if {$cmd == "OP_IDK"} {
+        # Either the opcode table is missing an entry or the byte string is not a script. Set the file pointer to the end
+        # of the string. We're done.
         move [expr $len - $i]
         set retcode 2
         break
@@ -449,8 +479,8 @@ proc parseScript {len}  {
     }
     
   }
-  # Return both a return code and the list of opcodes. If return code=1 then the parse led to a length of bytes 
-  # processed bigger thn expected. This usually means that the data were not really script. If return code=2 then
+  # Return both a return code and the list of opcodes. If retcode=1 then the parse led to a length of bytes 
+  # processed bigger than expected. This usually means that the data were not really script. If retcode=2 then
   # an unrecognized opcode was encountered. This could mean either that something is missing on the opcode table
   # or that the data are not really script.
   return [list $retcode $OPCList] 
@@ -680,13 +710,28 @@ set CONTEXT "Init"
 
 # END DEBUG SETUP   ********
 
-
-
 set nullstr ""
 set exitMsgs {}
 set ALLDONE 0
 set szFile [len]
 set declabel [format "Decode Level %d" [info level]]
+
+if $XTND_SS {
+  entry "Extended decoding ON for ScriptSig" $nullstr
+} else {
+  entry "Extended decoding OFF for ScriptSig" $nullstr
+}
+if $XTND_SPK {
+  entry "Extended decoding ON for ScriptPubKey" $nullstr
+} else {
+  entry "Extended decoding OFF for ScriptPubKey" $nullstr
+}
+if $XTND_WIT {
+  entry "Extended decoding ON for Witness" $nullstr
+} else {
+  entry "Extended decoding OFF for Witness" $nullstr
+}
+entry $nullstr $nullstr
 
 initTemplate
 
@@ -763,7 +808,7 @@ set CONTEXT "Input"
             if {$nscriptbytes > 0} {
               # Check for block height. If it's the Coinbase transaction and the first script byte 
               # is 0x3 then the next 3 bytes are the block height.
-              if $Coinbase {
+              if {$Coinbase && $nscriptbytes > 3} {
                 set bheight [uint8]
                 if {$bheight == 3} { 
                   uint24 "height"
@@ -773,46 +818,50 @@ set CONTEXT "Input"
                 move -1
               }
               bytes $nscriptbytes "ScriptSig"
-              
-              # Process the script if it's not the Coinbase input.
-              if !$Coinbase {
-                move -$nscriptbytes
-                set parseRes [parseScript $nscriptbytes]
-                set parseFail [lindex $parseRes 0]
-                set opcode [lindex $parseRes 1]
-                if !$parseFail {               
-  if {$DEBUG} {
-                  # Look for target opcodes in list of those found.
-                  for {set n 0} {$n < $nssTar} {incr n} {
-                    set t [lindex $ssTarget $n] 
-                    for {set m 0} {$m < [llength $opcode]} {incr m} {
-                      set oc [lindex [lindex $opcode $m] 0]
-                      if {$oc ==  $t} {
-                        set aux [lindex [lindex $opcode $m] 1]
-                        lappend op_ss [list $curTx $kcnt $t $aux]
+              if {$extendedVersion & $XTND_SS_MASK} {
+                # Process the script if it's not the Coinbase input.
+                if !$Coinbase {
+                  move -$nscriptbytes
+                  set parseRes [parseScript $nscriptbytes]
+                  set parseFail [lindex $parseRes 0]
+                  set opcode [lindex $parseRes 1]
+                  if !$parseFail {               
+if {$DEBUG} {
+                    # Look for target opcodes in list of those found.
+                    for {set n 0} {$n < $nssTar} {incr n} {
+                      set t [lindex $ssTarget $n] 
+                      for {set m 0} {$m < [llength $opcode]} {incr m} {
+                        set oc [lindex [lindex $opcode $m] 0]
+                        if {$oc ==  $t} {
+                          set aux [lindex [lindex $opcode $m] 1]
+                          lappend op_ss [list $curTx $kcnt $t $aux]
+                        }
                       }
                     }
-                  }
-  }
+}
 
-                  if { ![decodeParse $opcode $nscriptbytes] } {
-                    lappend exitMsgs [format "Exit: ScriptSig decodeParse fail Tx: %d  input %d " $curTx $kcnt]
-                    set ALLDONE 1
-                    continue
-                  } 
-                } else {
-                  if {$parseFail == 1} {
-                    set reason "Out of bounds"
+                    if { ![decodeParse $opcode $nscriptbytes] } {
+                      lappend exitMsgs [format "Exit: ScriptSig decodeParse fail Tx: %d  input %d " $curTx $kcnt]
+                      set ALLDONE 1
+                      continue
+                    } 
                   } else {
-                    set bad [lindex [lindex $opcode [expr [llength $opcode] - 1]] 1]
-                    set reason [format "Bad opcode %d (0x%x)" $bad $bad]
+                    if {$parseFail == 1} {
+                      set reason "Out of bounds"
+                    } else {
+                      set bad [lindex [lindex $opcode [expr [llength $opcode] - 1]] 1]
+                      set reason [format "Bad opcode %d (0x%x)" $bad $bad]
+                    }
+                    lappend exitMsgs [format "Opcode parse fail: %s  Tx=%d input=%d" $reason $curTx $kcnt]
                   }
-                  lappend exitMsgs [format "Opcode parse fail: %s  Tx=%d input=%d" $reason $curTx $kcnt]
+                } else {
+                    set Coinbase 0
+                    set iscb ""
                 }
-              } else {
-                  set Coinbase 0
-                  set iscb ""
-              }
+              } else {   ;  # (extendedVersion & XTND_SS_MASK) != 0
+                set Coinbase 0
+                set iscb ""
+              }  ;  # (extendedVersion & XTND_SS_MASK)  ==  0
             } 
             uint32 -hex "nSequence"
           } 
@@ -837,38 +886,40 @@ set CONTEXT "Output"
               continue
             }
             bytes $nscriptbytes "ScriptPubKey"
-            move -$nscriptbytes
-            set parseRes [parseScript $nscriptbytes]
-            set parseFail [lindex $parseRes 0]
-            set opcode [lindex $parseRes 1]
-            if !$parseFail {
+            if {$extendedVersion & $XTND_SPK_MASK} {
+              move -$nscriptbytes
+              set parseRes [parseScript $nscriptbytes]
+              set parseFail [lindex $parseRes 0]
+              set opcode [lindex $parseRes 1]
+              if !$parseFail {
 if {$DEBUG} {
-              # Look for target opcodes in list of those found.
-              for {set n 0} {$n < $nspkTar} {incr n} {
-                set t [lindex $spkTarget $n]
-                for {set m 0} {$m < [llength $opcode]} {incr m} {
-                  set oc [lindex [lindex $opcode $m] 0]
-                  if {$oc ==  $t} {
-                    set aux [lindex [lindex $opcode $m] 1]
-                    lappend op_spk [list $curTx $kcnt $t $aux]
+                # Look for target opcodes in list of those found.
+                for {set n 0} {$n < $nspkTar} {incr n} {
+                  set t [lindex $spkTarget $n]
+                  for {set m 0} {$m < [llength $opcode]} {incr m} {
+                    set oc [lindex [lindex $opcode $m] 0]
+                    if {$oc ==  $t} {
+                      set aux [lindex [lindex $opcode $m] 1]
+                      lappend op_spk [list $curTx $kcnt $t $aux]
+                    }
                   }
                 }
-              }
 }
-              if { ![decodeParse $opcode $nscriptbytes $sats] } {
-                lappend exitMsgs [format "Exit: ScriptPubKey decodeParse fail Tx: %d  output %d " $curTx $kcnt]
-                set ALLDONE 1
-                continue
+                if { ![decodeParse $opcode $nscriptbytes $sats] } {
+                  lappend exitMsgs [format "Exit: ScriptPubKey decodeParse fail Tx: %d  output %d " $curTx $kcnt]
+                  set ALLDONE 1
+                  continue
+                }
+              } else  {
+                if {$parseFail == 1} {
+                  set reason "Out of bounds"
+                } else {
+                  set bad [lindex [lindex $opcode [expr [llength $opcode] - 1]] 1]
+                  set reason [format "Bad opcode %d (0x%x)" $bad $bad]
+                }
+                lappend exitMsgs [format "Opcode parse fail: %s  Tx=%d output=%d" $reason $curTx $kcnt]
               }
-            } else  {
-              if {$parseFail == 1} {
-                set reason "Out of bounds"
-              } else {
-                set bad [lindex [lindex $opcode [expr [llength $opcode] - 1]] 1]
-                set reason [format "Bad opcode %d (0x%x)" $bad $bad]
-              }
-              lappend exitMsgs [format "Opcode parse fail: %s  Tx=%d output=%d" $reason $curTx $kcnt]
-            }       
+            }   ;  # (extendedVersion & XTND_SPK_MASK) != 0 
           }
         }
       }
@@ -893,15 +944,18 @@ set CONTEXT "Witness"
                   if {$nscriptbytes > 0 } {
                     set ilabel [format "Item %d" [expr $l + 1]]
                     bytes $nscriptbytes $ilabel
-                    move -$nscriptbytes
-                    section -collapsed $declabel {
-                      set wType [decodeStack $nscriptbytes "W"]
-                      if {![showStack $wType $nscriptbytes]} { 
-                        lappend exitMsgs [format "Exit: Witness showSrack fail Tx: %d  input %d " $curTx $kcnt]
-                        set ALLDONE 1
-                        continue
+                    
+                    if {$extendedVersion & $XTND_WIT_MASK} {
+                      move -$nscriptbytes
+                      section -collapsed $declabel {
+                        set wType [decodeStack $nscriptbytes "W"]
+                        if {![showStack $wType $nscriptbytes]} { 
+                          lappend exitMsgs [format "Exit: Witness showSrack fail Tx: %d  input %d " $curTx $kcnt]
+                          set ALLDONE 1
+                          continue
+                        }
                       }
-                    }
+                    }  ;  # (extendedVersion & XTND_WIT_MASK) != 0
                   } 
                 } ; # for each stack item
               }   ; # Section stack items   
@@ -919,9 +973,7 @@ set CONTEXT "Witness"
 
 
 entry " " $nullstr
-if {![llength $exitMsgs]} {
-  lappend exitMsgs "Exit: normal"
-}
+lappend exitMsgs "Done"
 for {set i 0} {$i < [llength $exitMsgs]} {incr i} {
   set label [lindex $exitMsgs $i]
   entry $label $nullstr 
