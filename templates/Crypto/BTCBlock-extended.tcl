@@ -10,7 +10,7 @@
 #
 #   In this expanded version additional processing is available as follows:
 #
-#     For each Transaction in the block this Template will try and decode the Script in ScriptSigs and ScriptPubKeys 
+#     For each Transaction in the block this Template will decode the Script in ScriptSigs and ScriptPubKeys 
 #     accompanying inputs and outputs, respectively. Each ScriptPubKey and non-empty ScriptSig will be displayed as a
 #     Hex Fiend byte field. Following each there will be a collapsed Hex Fiend Section called 'Decode'. Expanding
 #     this Section will reveal a labeled version of the respective Script content.
@@ -23,10 +23,10 @@
 #
 # This Template is offered AS-IS. The 'Decode' sections are best effort. 
 #
-# This template runs slowly on older machines such as my old Intel MBA (2019). Even on an M2 MBA there is a noticeable
-# delay when expanding the Transactions on newer blk*.dat files. The execution time on both older and newer machines is
-# reasonable for initial results with the collapsed Transactions. Expanding the Transactions section leads to a 
-# noticeable delay especially on older machines.
+# Because of the decoding burden this template may run slowly on older machines such as my old Intel MBA (2019). The 
+# execution time on both older and newer machines is reasonable for initial results where the 'TX COUNT' section is 
+# collapsed by default. But expanding the 'TX COUNT' section leads to a noticeable delay on older machines. Even on 
+# an M2 MBA there can sometimes be a noticeable delay.  
 #
 # To mitigate the performance delay the variables XTND_SS, XTND_SPK and XTND_WIT can be set to control extended decoding 
 # of ScriptSig, ScriptPubKey, and Witness data respectively. Set them to '1' to decode their data. Set them to '0' otherwise.
@@ -40,12 +40,13 @@
 set XTND_SS  1  ; # extended ScriptSig decoding
 set XTND_SPK 1  ; # extended ScriptPubKey decoding
 set XTND_WIT 1  ; # extended Witness decoding
-set XTND_SS_MASK   1
-set XTND_SPK_MASK  2
-set XTND_WIT_MASK  4
 set extendedVersion [expr $XTND_SS | \
                     [expr ($XTND_SPK<<1)] | \
                     [expr ($XTND_WIT<<2)]]
+
+set XTND_SS_MASK   1
+set XTND_SPK_MASK  [expr 1<<1]
+set XTND_WIT_MASK  [expr 1<<2]
 ####################################################
 
 
@@ -463,14 +464,14 @@ proc parseScript {len}  {
     }
     
     if {$i > $len} {
-      # The number of bytes processed in the presumed script exceeds the length of the byte string. Probably not a script. 
+      # The number of bytes processed in the presumed script exceeds the length of the byte string. Probably not Script. 
       # Set the file pointer to the end of the string. We're done.
       move [expr $len - $i]
       set retcode 1
     } else {
       lappend OPCList $opcode
       if {$cmd == "OP_IDK"} {
-        # Either the opcode table is missing an entry or the byte string is not a script. Set the file pointer to the end
+        # Either the opcode table is missing the entry or the byte string is not Script. Set the file pointer to the end
         # of the string. We're done.
         move [expr $len - $i]
         set retcode 2
@@ -479,10 +480,7 @@ proc parseScript {len}  {
     }
     
   }
-  # Return both a return code and the list of opcodes. If retcode=1 then the parse led to a length of bytes 
-  # processed bigger than expected. This usually means that the data were not really script. If retcode=2 then
-  # an unrecognized opcode was encountered. This could mean either that something is missing on the opcode table
-  # or that the data are not really script.
+  # Return a list consisting of both the return code and the list of opcodes.
   return [list $retcode $OPCList] 
 }
 
@@ -522,7 +520,7 @@ proc showStack {type len {flags 0}} {
         if {$len == 20} {
           bytes $len "<hash>"
         } else {
-          bytes $len "nonMS data"
+          bytes $len "<data>"
         }
       }
     }
@@ -561,7 +559,7 @@ proc showStack {type len {flags 0}} {
         # case try and parse the unknown bytes to see if they're script. Otherwise just display them as unknown. Checking
         # the stack frame level also prevents recursive attempts to parse unknown data. If it is unknown data from ScriptSig
         # or ScriptPubKey processing (stack frame level > 1) then display it as unknown. Those two should parse as scripts 
-        # so if the data are unknown then display them as such. I know. The stack frame check is a little hacky.
+        # so if the data are unknown then display them as such. I know. The stack frame check is a hack.
         if {[info level] == 1} {
           set parseRes [parseScript $len]
           set retval [lindex $parseRes 0]
@@ -590,11 +588,11 @@ global kcnt
           } else {
             # Parse failed. Move back over bytes and display them as unknown.
             move -$len
-            bytes $len "IDK bytes"
+            bytes $len "<data>"
           }
         } else {
           # It's not a call from the main processing level. Just display the unknown bytes.
-          bytes $len "IDK bytes"
+          bytes $len "<data>"
         }
       }
     }
@@ -614,7 +612,7 @@ global kcnt
   return $retval
 }
 
-# Display script detail for each opcode discovered in ScriptSig or ScriptPubKey.
+# Display script detail for each opcode discovered in ScriptSig, ScriptPubKey, or possibly a Witness stack item.
 proc decodeParse {opcodes len {sats 0}} {
   # Move the input pointer back and process ScriptSig or ScriptPubKey in parallel with the Opcode list and display info in
   # Hex Fiend fields.
@@ -624,7 +622,12 @@ proc decodeParse {opcodes len {sats 0}} {
   set retval 1
   set flags 0
   set llen [llength $opcodes]
-  set label [format "Decode Level %d" [info level]]
+  set label "Decode"
+  
+  if {[info level] == 2} {
+    # We got here decoding a Witness stack item that we now know is Script. Label the item as such.
+    set label "Script"
+  }
   
   section -collapsed $label {
     for {set i 0} {$i < $llen  &&  $done == 0} {incr i} {
@@ -676,8 +679,8 @@ proc decodeParse {opcodes len {sats 0}} {
           set flags [expr $flags | 1]
         }
       }
-    }
-  }
+    }  ;  # for all opcodes
+  }    ;  # Section decode
   
   return $retval
 }
@@ -692,17 +695,17 @@ global curTx
 global kcnt
 global debugMsgs
 
-set op_ss  {}
 set ssTarget {}
 set nssTar [llength $ssTarget]
+set op_ss  {}
 
-set op_spk {}
 set spkTarget {}
 set nspkTar [llength $spkTarget]
+set op_spk {}
 
-set op_w {}
 set wTarget {}
 set nwTar [llength $wTarget]
+set op_w {}
 
 set debugMsgs {}
 set DEBUG 1
@@ -714,7 +717,6 @@ set nullstr ""
 set exitMsgs {}
 set ALLDONE 0
 set szFile [len]
-set declabel [format "Decode Level %d" [info level]]
 
 if $XTND_SS {
   entry "Extended decoding ON for ScriptSig" $nullstr
@@ -839,7 +841,6 @@ if {$DEBUG} {
                       }
                     }
 }
-
                     if { ![decodeParse $opcode $nscriptbytes] } {
                       lappend exitMsgs [format "Exit: ScriptSig decodeParse fail Tx: %d  input %d " $curTx $kcnt]
                       set ALLDONE 1
@@ -864,9 +865,9 @@ if {$DEBUG} {
               }  ;  # (extendedVersion & XTND_SS_MASK)  ==  0
             } 
             uint32 -hex "nSequence"
-          } 
-        }
-      }  
+          } ;  # Section Input
+        }   ;  # for each input
+      }     ;  # Section for all inputs  
       
       # outputs
       set nOutputs [getVarint]
@@ -920,9 +921,9 @@ if {$DEBUG} {
                 lappend exitMsgs [format "Opcode parse fail: %s  Tx=%d output=%d" $reason $curTx $kcnt]
               }
             }   ;  # (extendedVersion & XTND_SPK_MASK) != 0 
-          }
-        }
-      }
+          }     ;  # Section Output
+        }       ;  # for each output
+      }         ;  # Section all outputs
 
       #if it's a Segwit transaction process the witness data for each input
       if {$segwit} {
@@ -947,7 +948,7 @@ set CONTEXT "Witness"
                     
                     if {$extendedVersion & $XTND_WIT_MASK} {
                       move -$nscriptbytes
-                      section -collapsed $declabel {
+                      section -collapsed "Decode" {
                         set wType [decodeStack $nscriptbytes "W"]
                         if {![showStack $wType $nscriptbytes]} { 
                           lappend exitMsgs [format "Exit: Witness showSrack fail Tx: %d  input %d " $curTx $kcnt]
@@ -955,21 +956,21 @@ set CONTEXT "Witness"
                           continue
                         }
                       }
-                    }  ;  # (extendedVersion & XTND_WIT_MASK) != 0
-                  } 
-                } ; # for each stack item
-              }   ; # Section stack items   
-            }     ; # Section Witness input   
-          }       ; # for each input
-        }         ; # Section Witness data
-      }           ; # process Segwit data
+                    }  ; # (extendedVersion & XTND_WIT_MASK) != 0
+                  }    ; # nscriptbytes > 0
+                }      ; # for each stack item
+              }        ; # Section stack items   
+            }          ; # Section Witness input   
+          }            ; # for each input
+        }              ; # Section Witness data
+      }                ; # process Segwit data
 
       if {$ALLDONE == 0} {
         uint32 "nLockTime"
       } 
     } ; # Section single transaction
-  } ; # for each transaction
-} ; # Section all transactions
+  }   ; # for each transaction
+}     ; # Section all transactions
 
 
 entry " " $nullstr
