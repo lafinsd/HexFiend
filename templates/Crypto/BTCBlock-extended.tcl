@@ -50,238 +50,6 @@ set XTND_WIT_MASK  [expr 1<<2]
 ####################################################
 
 
-# Return a BTC varint value. Presence of an argument causes the varint to be displayed as a Hex Fiend 
-# field with the argument as the label. The file pointer is left at the first byte past the varint.
-proc getVarint {{label ""}} {
-    # Read the indicator byte
-    set val [uint8]
-    
-    if {$val == 0xfd} {
-      set val    [uint16]
-      set type   "uint16"
-      set moveit -2
-    } elseif {$val == 0xfe} {
-       set val    [uint32]
-       set type   "uint32"
-       set moveit -4
-    } elseif {$val == 0xff} {
-       set val    [uint64]
-       set type   "uint64"
-       set moveit -8
-    } else {
-       set moveit -1
-       set type   "uint8"
-    }
-    
-    if {$label != ""}  {
-      move $moveit
-      $type $label
-    }
-
-    return $val
-}
-
-proc isPubKey {} {
-  set klen [uint8]
-  set op [uint8]
-  move -2
-  set retval 1
-  
-  if {$klen == 0x21} {
-    # compressed key?
-    if {$op != 2 && $op != 3} {
-      set retval 0
-    }
-  } elseif {$klen == 0x41} {
-    # uncompressed key?
-    if {$op != 4} {
-      set retval 0
-    }
-  } else {
-    set retval 0
-  }
-  
-  return $retval
-}
-
-proc decodePubKey {len} {
-  set retval 1
-  
-  if {$len == 33} {
-    bytes $len "Compressed PubKey"
-  } elseif {$len == 65} {
-    bytes $len "Uncompressed PubKey"
-  } else {
-    bytes $len "Unk Key"
-    set retval 0
-  }
-  
-  return $retval
-}
-
-proc decodeMultiSig {} {
-  set OP_ [expr {[uint8] - 80} ]
-  if {![isPubKey]} {
-    move -1
-    return 0
-  }
-  section -collapsed "m of n Multisig PubKeys" {
-    move -1
-    uint8 "m  (OP_$OP_)"
-    set sigs 1
-    while {$sigs} {
-      set len [uint8]
-      if {$len == 33 || $len == 65} {
-        decodePubKey $len
-      } else {
-        move -1
-        set sigs 0
-      }
-    }
-    
-    set OP_ [expr {[uint8] - 80} ]
-    move -1
-    uint8 "n  (OP_$OP_)"
-    
-    set op [uint8]
-    if {$op == 0xae} {
-      set type "OP_CHECKMULTISIG"
-    } elseif {$op == 0xaf} {
-      set type "OP_CHECKMULTISIGVERIFY"
-    } elseif {$op == 0xba}  {
-      set type "OP_CHECKSIGADD"
-    } else {
-      set type "OP_IDK"
-    }
-    move -1
-    uint8 "$type" 
-  }
-  return 1
-}
-
-proc decodeSig {} {
-  section -collapsed "Signature" {
-    uint8 -hex "DER"
-    uint8 "struct length"
-    uint8 "integer marker"
-    set r [uint8]
-    move -1
-    uint8 "r length"
-    bytes $r "r"
-    uint8 "integer marker"
-    set s [uint8]
-    move -1
-    uint8 "s length"
-    bytes $s "s"
-    set flag [uint8]
-    move -1
-    uint8 [getSIGHASH_flag $flag]
-  }
-  return
-}
-
-# Check DER signature for sanity. Read the bytes as if it is a correctly formed signature interpreting the bytes accordingly.
-# If any consistency check fails or the resulting byte count doesn't match the anticipated length the proc fails. File 
-# pointer left at the byte after the byte count field.
-proc isDERSignature {len}  {
-  set curpos 0
-  set DER [uint8]
-  incr curpos
-  if {$DER != 0x30} {
-    move -$curpos
-    return 0
-  }
-  
-  set slen [uint8] 
-  incr curpos
-  if {[expr {$slen + 3}] != $len} {
-    move -$curpos
-    return 0
-  }
-  
-  for {set i 0} {$i < 2} {incr i} {
-    set intmrk [uint8]
-    incr curpos
-    if {$intmrk != 2} {
-      move -$curpos
-      return 0
-    }
-  
-    set pslen [uint8]
-    incr curpos
-    if {[expr {$pslen + $curpos}] > $len} {
-      move -$curpos
-      return 0
-    }
-  
-    move $pslen
-    incr curpos $pslen
-  }
-  set sighash [uint8]
-  incr curpos
-  move -$curpos
-  
-  if {$curpos != $len} {
-    return 0
-  }
-  return 1
-}
-
-# This proc tries to interpret contents of a Witness stack item. The Witness stack items each contain data whose length is
-# specified by a preceeding byte count. The data are usually not script so we don't directly parse for opcodes as with  
-# ScriptSig and ScriptPubKey. The data might represent an elemental structure like a signature or public key. 
-#
-# This proc is also used to suss out ScriptSig and ScriptPubKey data pushed onto the stack. Typically in this case 
-# the data are elemental structures and not script.
-# 
-# This proc leaves the file pointer at the byte after the length spec.
-proc decodeStack {len {context ""}} {
-  if {$len == 20} {
-    # Data is probably pushed hash. Don't try to interpret it. It's OK if we miss something we could have figured out.
-    set type "stIDK"
-  } elseif {($len == 64 || $len == 65) && $context == "W"} {
-    set type "stSCHNORR"
-  } else {
-    # Try to guess the object. Key off the first two bytes. Could possibly interpret something we shouldn't.
-    set op  [uint8]
-    set op1 [uint8]
-    move -2
-    
-    if {$op == 0x30 && $len >= 67 &&  $len <= 73} {
-      set type "stDER"
-      if {![isDERSignature $len]} {
-        set type "stbadDERSig"
-      }
-    } elseif {$op == 81} {
-      if {$op1 == 32} {
-        # Version 1 SegWit: Taproot. 
-        set type "stOP1TRPUBK"
-      } else {
-        # Simple numeric value
-        set type "stOP_81-96"
-      }
-    } elseif {$op >= 82 && $op <= 96} {
-      # Simple numeric value
-      set type "stOP_81-96"
-    } elseif {$len == 33 && ($op == 2  ||  $op == 3)} {
-      # A compressed public key
-      set type "stcPK"
-    } elseif {$len == 65 && $op == 4} {
-      # An uncompressed public key
-      set type "stuPK"
-    } elseif {$op == 0 && $op1 == 20} {
-      # Version 0 SegWit
-      set type "stOP0HASH20"
-    } elseif {$op == 0 && $op1 == 32} {
-      # Version 0 SegWit
-      set type "stOP0HASH32"
-    } else {
-      set type "stIDK"
-    }
-  }
-  return $type
-}
-
 proc initTemplate {} {
   global opcodeTable {}
   global SighashFlagTable {}
@@ -362,7 +130,7 @@ proc initTemplate {} {
       {184 "OP_NOP9"} \
       {185 "OP_NOP10"} \
       {186 "OP_CHECKSIGADD"} \
-}
+  }
   
   set SighashFlagTable { \
      {1 "SIGHASH_ALL"} \
@@ -381,6 +149,193 @@ proc initTemplate {} {
 
   return
 }
+
+# Return a BTC varint value. Presence of an argument causes the varint to be displayed as a Hex Fiend 
+# field with the argument as the label. The file pointer is left at the first byte past the varint.
+proc getVarint {{label ""}} {
+    # Read the indicator byte
+    set val [uint8]
+    
+    if {$val == 0xfd} {
+      set val    [uint16]
+      set type   "uint16"
+      set moveit -2
+    } elseif {$val == 0xfe} {
+       set val    [uint32]
+       set type   "uint32"
+       set moveit -4
+    } elseif {$val == 0xff} {
+       set val    [uint64]
+       set type   "uint64"
+       set moveit -8
+    } else {
+       set moveit -1
+       set type   "uint8"
+    }
+    
+    if {$label != ""}  {
+      move $moveit
+      $type $label
+    }
+
+    return $val
+}
+
+proc isPubKey {} {
+  set klen [uint8]
+  set op [uint8]
+  move -2
+  set retval 1
+  
+  if {$klen == 0x21} {
+    # compressed key?
+    if {$op != 2 && $op != 3} {
+      set retval 0
+    }
+  } elseif {$klen == 0x41} {
+    # uncompressed key?
+    if {$op != 4} {
+      set retval 0
+    }
+  } else {
+    set retval 0
+  }
+  
+  return $retval
+}
+
+proc decodePubKey {len} {
+  set retval 1
+  
+  if {$len == 33} {
+    bytes $len "Compressed PubKey"
+  } elseif {$len == 65} {
+    bytes $len "Uncompressed PubKey"
+  } else {
+    bytes $len "Unk Key"
+    set retval 0
+  }
+  
+  return $retval
+}
+
+proc decodeMultiSig {len} {
+  set moved 0  ; # need to track relative position because Hex Fiend [pos] does not work for non-zero origin
+  set OP_ [expr {[uint8] - 80} ]
+  if {![isPubKey]} {
+    move -1
+    return [list 0 $len]
+  }
+  section -collapsed "m of n Multisig PubKeys" {
+    move -1
+    uint8 "m  (OP_$OP_)"
+    incr moved
+    set sigs 1
+    while {$sigs} {
+      set len [uint8]
+      incr moved
+      if {$len == 33 || $len == 65} {
+        decodePubKey $len
+        incr moved $len
+      } else {
+        move -1
+        incr moved -1
+        set sigs 0
+      }
+    }
+    
+    set OP_ [expr {[uint8] - 80} ]
+    move -1
+    uint8 "n  (OP_$OP_)"
+    incr moved
+    
+    set op [uint8]
+    if {$op == 0xae} {
+      set type "OP_CHECKMULTISIG"
+    } elseif {$op == 0xaf} {
+      set type "OP_CHECKMULTISIGVERIFY"
+    } elseif {$op == 0xba}  {
+      set type "OP_CHECKSIGADD"
+    } else {
+      set type "OP_IDK"
+    }
+    move -1
+    uint8 "$type" 
+    incr moved
+  }
+  return [list 1 $moved]
+}
+
+proc decodeSig {} {
+  set moved 0
+  section -collapsed "Signature" {
+    uint8 -hex "DER"
+    uint8 "struct length"
+    uint8 "integer marker"
+    set r [uint8]
+    move -1
+    uint8 "r length"
+    bytes $r "r"
+    uint8 "integer marker"
+    set s [uint8]
+    move -1
+    uint8 "s length"
+    bytes $s "s"
+    set flag [uint8]
+    move -1
+    uint8 [getSIGHASH_flag $flag]
+    set moved [expr 7 + $r + $s]
+  }
+  return $moved
+}
+
+# Check DER signature for sanity. Read the bytes as if it is a correctly formed signature interpreting the bytes accordingly.
+# If any consistency check fails or the resulting byte count doesn't match the anticipated length the proc fails. File 
+# pointer left at the byte after the byte count field.
+proc isDERSignature {len}  {
+  set curpos 0
+  set DER [uint8]
+  incr curpos
+  if {$DER != 0x30} {
+    move -$curpos
+    return 0
+  }
+  
+  set slen [uint8] 
+  incr curpos
+  if {[expr {$slen + 3}] != $len} {
+    move -$curpos
+    return 0
+  }
+  
+  for {set i 0} {$i < 2} {incr i} {
+    set intmrk [uint8]
+    incr curpos
+    if {$intmrk != 2} {
+      move -$curpos
+      return 0
+    }
+  
+    set pslen [uint8]
+    incr curpos
+    if {[expr {$pslen + $curpos}] > $len} {
+      move -$curpos
+      return 0
+    }
+  
+    move $pslen
+    incr curpos $pslen
+  }
+  set sighash [uint8]
+  incr curpos
+  move -$curpos
+  
+  if {$curpos != $len} {
+    return 0
+  }
+  return 1
+}
+
 
 # Look for SIGHASH flag and map it to something interpretable for later display.
 proc getSIGHASH_flag {flag} {
@@ -484,146 +439,17 @@ proc parseScript {len}  {
   return [list $retcode $OPCList] 
 }
 
-proc showSpecial {type len label flags} {
-  if {[expr $flags & 2]} {
-    section -collapsed "<decode pushed>" {
-      uint8 $type
-      uint8 "OP_PUSH"
-      bytes $len $label
-    }
-  } else {
-    uint8 $type
-    uint8 "OP_PUSH"
-    bytes $len $label
-  }
-}
-
-# Display data previously interpreted from the stack. It is either Witness stack data or possibly data pushed in a ScriptSig or
-# ScriptPubKey script.
-#
-# this procedure leaves the pointer at the end of the data
-proc showStack {type len {flags 0}} { 
-  set retval 1
-                   
-  switch $type {
-    "stbadDERSig" {
-      entry "DER hint fails" $type
-      set retval 0
-    }
-    "stDER" {
-      # Object already verified as a DER signature. Just display it.
-      decodeSig
-    }
-    "stOP_81-96" {
-      # Might be a multisig
-      if {![decodeMultiSig]} {
-        if {$len == 20} {
-          bytes $len "<hash>"
-        } else {
-          bytes $len "<data>"
-        }
-      }
-    }
-    "stcPK" {
-      # Might be a compressed public key
-      if {![decodePubKey $len]} {
-        set retval 0
-      }
-    }  
-    "stuPK" {
-      # Might be an uncompressed public key
-      if {![decodePubKey $len]} {
-        set retval 0
-      }
-    }
-    "stOP1TRPUBK" {
-      # Version 1 SegWit: Taproot
-      showSpecial "OP_1" 32 "<P2TR PubKey>" $flags
-    }
-    "stOP0HASH20" {
-      showSpecial "OP_0" 20 "<PubKey hash>" $flags
-    }
-    "stOP0HASH32" {
-      showSpecial "OP_0" 32 "<Script hash>" $flags
-    }
-    "stIDK" {
-      # No specific clue to data on stack. There are a few cases we can guess.
-      if {$len == 20 || $len == 32} {
-        # Probably a key hash or a script hash
-        bytes $len "<hash>"
-      } elseif {[expr $flags & 1]} {
-        # Arbitrary data (sometimes printable characters) after an OP_RETURN (which guarantees script result is not TRUE)
-        bytes $len "<data>"
-      } else {
-        # I (really) Don't Know. If this call is from Witness processing than the stack frame level will be 1. In this
-        # case try and parse the unknown bytes to see if they're script. Otherwise just display them as unknown. Checking
-        # the stack frame level also prevents recursive attempts to parse unknown data. If it is unknown data from ScriptSig
-        # or ScriptPubKey processing (stack frame level > 1) then display it as unknown. Those two should parse as scripts 
-        # so if the data are unknown then display them as such. I know. The stack frame check is a hack.
-        if {[info level] == 1} {
-          set parseRes [parseScript $len]
-          set retval [lindex $parseRes 0]
-          if !$retval {
-            set script [lindex $parseRes 1]
-global DEBUG
-if $DEBUG {
-global nwTar
-global wTarget
-global op_w
-global curTx
-global kcnt
-            # Look for target opcodes in list of those found.
-            for {set n 0} {$n < $nwTar} {incr n} {
-              set t [lindex $wTarget $n]
-              for {set m 0} {$m < [llength $script]} {incr m} {
-                set oc [lindex [lindex $script $m] 0]
-                if {$oc ==  $t} {
-                  set aux [lindex [lindex $script $m] 1]
-                  lappend op_w [list $curTx $kcnt $t $aux]
-                }
-              }
-            }
-}
-            set retval [decodeParse $script $len]
-          } else {
-            # Parse failed. Move back over bytes and display them as unknown.
-            move -$len
-            bytes $len "<data>"
-          }
-        } else {
-          # It's not a call from the main processing level. Just display the unknown bytes.
-          bytes $len "<data>"
-        }
-      }
-    }
-    "stSCHNORR" {
-      bytes 64 "Schnorr Sig"
-      if {$len == 65} {
-        set flag [uint8]
-        move -1
-        uint8 [getSIGHASH_flag $flag] 
-      }
-    }
-    default {
-      entry "unknown stack data type" $type
-      set retval 0
-    }
-  }
-  return $retval
-}
-
 # Display script detail for each opcode discovered in ScriptSig, ScriptPubKey, or possibly a Witness stack item.
 proc decodeParse {opcodes len {sats 0}} {
   # Move the input pointer back and process ScriptSig or ScriptPubKey in parallel with the Opcode list and display info in
   # Hex Fiend fields.
   move -$len
-
   set done 0
   set retval 1
   set flags 0
   set llen [llength $opcodes]
   set label "Decode"
-  
+
   if {[info level] == 2} {
     # We got here decoding a Witness stack item that we now know is Script. Label the item as such.
     set label "Script"
@@ -684,6 +510,216 @@ proc decodeParse {opcodes len {sats 0}} {
   
   return $retval
 }
+
+# This proc tries to interpret contents of a Witness stack item. The Witness stack items each contain data whose length is
+# specified by a preceeding byte count. The data are usually not script so we don't directly parse for opcodes as with  
+# ScriptSig and ScriptPubKey. The data might represent an elemental structure like a signature or public key. 
+#
+# This proc is also used to suss out ScriptSig and ScriptPubKey data pushed onto the stack. Typically in this case 
+# the data are elemental structures and not script.
+# 
+# This proc leaves the file pointer at the byte after the length spec...at the beginning of the object.
+proc decodeStack {len {context ""}} {
+  if {$len == 20} {
+    # Data is probably pushed hash. Don't try to interpret it. It's OK if we miss something we could have figured out.
+    set type "stIDK"
+  } elseif {($len == 64 || $len == 65) && $context == "W"} {
+    set type "stSCHNORR"
+  } else {
+    # Try to guess the object. Key off the first two bytes. Could possibly interpret something we shouldn't.
+    set op  [uint8]
+    set op1 [uint8]
+    move -2   
+    
+    if {$op == 0x30 && $len >= 67 &&  $len <= 73} {
+      set type "stDER"
+      if {![isDERSignature $len]} {
+        set type "stIDK"
+      }
+    } elseif {$op == 81} {
+      if {$op1 == 32 && $len == 34} {
+        # Version 1 SegWit: Taproot. 
+        set type "stOP1TRPUBK"
+      } else {
+        # Simple numeric value
+        set type "stOP_81-96"
+      }
+    } elseif {$op >= 82 && $op <= 96} {
+      # Simple numeric value
+      set type "stOP_81-96"
+    } elseif {$len == 33 && ($op == 2  ||  $op == 3)} {
+      # A compressed public key
+      set type "stcPK"
+    } elseif {$len == 65 && $op == 4} {
+      # An uncompressed public key
+      set type "stuPK"
+    } elseif {$op == 0 && $op1 == 20 && $len == 22} {
+      # Version 0 SegWit
+      set type "stOP0HASH20"
+    } elseif {$op == 0 && $op1 == 32 && $len == 34} {
+      # Version 0 SegWit
+      set type "stOP0HASH32"
+    } else {
+      set type "stIDK"
+    }
+  }
+  return $type
+}
+
+# Display data previously interpreted from the stack. It is either Witness stack data or possibly data pushed in a ScriptSig or
+# ScriptPubKey script.
+#
+# this procedure leaves the pointer at the end of the data
+proc showStack {type len {flags 0}} { 
+  set retval 1
+  set moved 0
+                   
+  switch $type {
+    "stDER" {
+      # Object already verified as a DER signature. Just display it.
+      set moved [decodeSig]
+    }
+    "stOP_81-96" {
+      # Might be a multisig
+      set msretval [decodeMultiSig $len]
+      set res [lindex $msretval 0]
+      if {!$res} {
+        set moved $len
+        if {$len == 20} {
+          bytes $len "<hash>"
+        } else {
+          bytes $len "<data>"
+        }
+      } else {
+        set moved [lindex $msretval 1] 
+      }
+    }
+    "stcPK" {
+      # Might be a compressed public key
+      if {![decodePubKey $len]} {
+        set retval 0
+      }
+      set moved $len
+    }  
+    "stuPK" {
+      # Might be an uncompressed public key
+      if {![decodePubKey $len]} {
+        set retval 0
+      }
+      set moved $len
+    }
+    "stOP1TRPUBK" {
+      # Version 1 SegWit: Taproot
+      showSpecial "OP_1" 32 "<P2TR PubKey>" $flags
+      set moved 34
+    }
+    "stOP0HASH20" {
+      showSpecial "OP_0" 20 "<PubKey hash>" $flags
+      set moved 22
+    }
+    "stOP0HASH32" {
+      showSpecial "OP_0" 32 "<Script hash>" $flags
+      set moved 34
+    }
+    "stIDK" {
+      # No specific clue to data on stack. There are a few cases we can guess.
+      if {$len == 20 || $len == 32} {
+        # Probably a key hash or a script hash
+        bytes $len "<hash>"
+        set moved $len
+      } elseif {[expr $flags & 1]} {
+        # Arbitrary data (sometimes printable characters) after an OP_RETURN (which guarantees script result is not TRUE)
+        bytes $len "<data>"
+        set moved $len
+      } else {
+        # I (really) Don't Know. If this call is from Witness processing than the stack frame level will be 1. In this
+        # case try and parse the unknown bytes to see if they're script. Otherwise just display them as unknown. Checking
+        # the stack frame level also prevents recursive attempts to parse unknown data. If it is unknown data from ScriptSig
+        # or ScriptPubKey processing (stack frame level > 1) then display it as unknown. Those two should parse as scripts 
+        # so if the data are unknown then display them as such. I know. The stack frame check is a hack.
+        if {[info level] == 1} {
+          set parseRes [parseScript $len]
+          set retval [lindex $parseRes 0]
+          set moved $len
+          if !$retval {
+            set script [lindex $parseRes 1]
+global DEBUG
+if $DEBUG {
+global nwTar
+global wTarget
+global op_w
+global curTx
+global kcnt
+            # Look for target opcodes in list of those found.
+            for {set n 0} {$n < $nwTar} {incr n} {
+              set t [lindex $wTarget $n]
+              for {set m 0} {$m < [llength $script]} {incr m} {
+                set oc [lindex [lindex $script $m] 0]
+                if {$oc ==  $t} {
+                  set aux [lindex [lindex $script $m] 1]
+                  lappend op_w [list $curTx $kcnt $t $aux]
+                }
+              }
+            }
+}
+            set retval [decodeParse $script $len]
+          } else {
+            # Parse failed. Move back over bytes and display them as unknown.
+            move -$len
+            bytes $len "<data>"
+          }
+        } else {
+          # It's not a call from the main processing level. Just display the unknown bytes.
+          bytes $len "<data>"
+          set moved $len
+        }
+      }
+    }
+    "stSCHNORR" {
+      bytes 64 "Schnorr Sig"
+      set moved $len
+      if {$len == 65} {
+        set flag [uint8]
+        move -1
+        uint8 [getSIGHASH_flag $flag] 
+      }
+    }
+    default {
+      entry "unknown stack data type" $type
+      set retval 0
+    }
+  }
+  
+  if {$moved < $len} {
+    # There's more stuff here. Try parsing. If it fails just display the bytes as data.
+    set diff [expr $len - $moved]
+    set pret [parseScript $diff]
+    if {![lindex $pret 0]} {
+      if { ![decodeParse [lindex $pret 1] $diff] } {
+      } 
+    } else {
+      move -$diff
+     bytes $diff "<data>"
+    }
+  } elseif {$moved > $len} {
+  }
+  return $retval
+}
+
+proc showSpecial {type len label flags} {
+  if {[expr $flags & 2]} {
+    section -collapsed "<decode pushed>" {
+      uint8 $type
+      uint8 "OP_PUSH"
+      bytes $len $label
+    }
+  } else {
+    uint8 $type
+    uint8 "OP_PUSH"
+    bytes $len $label
+  }
+}
+
 
 # ***********************************************************************************************************************
 
@@ -938,7 +974,7 @@ set CONTEXT "Witness"
                   set ilabel [format "Item %d length" [expr $l + 1]]
                   set nscriptbytes [getVarint $ilabel] 
                   if {$nscriptbytes < 0  ||  $nscriptbytes > $szFile} {
-                    lappend exitMsgs [format "Exit: Bogus Witness stack nscriptbytes=%d Tx=%d input=%d item=%d" $nscriptbytes $curTx $kcnt $l]
+                    lappend exitMsgs [format "Exit: Bogus Witness stack nscriptbytes=%d Tx=%d input=%d item=%d" $nscriptbytes $curTx $kcnt [expr $l + 1]]
                     set ALLDONE 1
                     continue
                   }
@@ -950,8 +986,9 @@ set CONTEXT "Witness"
                       move -$nscriptbytes
                       section -collapsed "Decode" {
                         set wType [decodeStack $nscriptbytes "W"]
-                        if {![showStack $wType $nscriptbytes]} { 
-                          lappend exitMsgs [format "Exit: Witness showSrack fail Tx: %d  input %d " $curTx $kcnt]
+                        set retval [showStack $wType $nscriptbytes]
+                        if {!$retval} { 
+                          lappend exitMsgs [format "Exit: Witness showStack fail Tx=%d  input=%d item=%d" $curTx $kcnt [expr $l + 1]]
                           set ALLDONE 1
                           continue
                         }
@@ -984,7 +1021,7 @@ entry " " $nullstr
 
 # DEBUG/INSTRUMENTATION   ********
 if {[llength $debugMsgs] > 0}  {
-  entry [format "%d debug nmessages" [llength $debugMsgs]] $nullstr
+  entry [format "%d debug messages" [llength $debugMsgs]] $nullstr
   entry " " $nullstr
   for {set i 0} {$i < [llength $debugMsgs]} {incr i} {
     entry [lindex $debugMsgs $i] $nullstr
