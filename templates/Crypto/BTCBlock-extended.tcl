@@ -25,15 +25,15 @@
 # This Template is offered AS-IS. The 'Decode' sections are best effort. 
 #
 # Because of the decoding burden this template may run slowly on older machines such as my old Intel MBA (2019). The 
-# execution time on both older and newer machines is reasonable for initial results where the 'TX COUNT' section is 
+# execution time on both older and newer machines is reasonable for initial results where the 'TRANSACTIONS' section is 
 # collapsed by default. But expanding the 'TRANSACTIONS' section leads to a noticeable delay on older machines. Even on 
 # an M2 MBA there can sometimes be a noticeable delay.  
 #
 # To mitigate the performance delay the variables XTND_SS, XTND_SPK and XTND_WIT can be set here to control extended decoding 
-# of ScriptSig, ScriptPubKey, and Witness data respectively. Set them to '1' (default) to decode their data. Set them to '0' 
-# otherwise. The speedup for not decoding is noticeable and can be dramatic on older machines if all three are '0'. As a 
-# practical matter with all three set to '0' the performance of this Extended Template is indistinguishable from the 
-# non-Extended Template version 'BTCBlock.tcl'.
+# of ScriptSig, ScriptPubKey, and Witness data respectively. They are set to '1' by default to decode their data. Set them  
+# to '0' to inhibit decoding. The speedup for not decoding is noticeable and can be dramatic on older machines if all three 
+# are '0'. As a practical matter with all three set to '0' the performance of this Extended Template is indistinguishable 
+# from the non-Extended Template version 'BTCBlock.tcl'.
 #
 
 
