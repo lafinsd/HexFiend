@@ -709,6 +709,39 @@ proc showSpecial {type len label} {
   bytes $len $label
 }
 
+proc decodeCoinbase {nscriptbytes} {
+  # Special case of Coinbase Transaction. Check for block height. If the first Script byte is 0x3 
+  # the next 3 bytes are the block height.
+  move -$nscriptbytes
+  if {$nscriptbytes > 3} {
+    set bheight [uint8]
+    if {$bheight == 3} { 
+      # Fake the look of the  Decode section. No need to actually parse the data.
+      move -1
+      section -collapsed "Decode" {
+        uint8 "OP_PUSH"
+        uint24 "height"
+        if {$nscriptbytes > 4} {
+          # Display the remaining bytes
+          bytes [expr $nscriptbytes - 4] "<data>" 
+        }
+      }
+    } else {
+      # No height info. Just label the bytes as data
+      move -1
+      section -collapsed "Decode" {
+        bytes $nscriptbytes "<data>"
+      }
+    }
+  } else {
+    section -collapsed "Decode" {
+      bytes $nscriptbytes "<data>"
+    }
+  }
+  
+  return
+}
+
 
 # ***********************************************************************************************************************
 # ***********************************************************************************************************************
@@ -840,34 +873,8 @@ section -collapsed "TRANSACTIONS"  {
                     lappend exitMsgs [format "Opcode parse fail (%d): %s  Tx=%d input=%d" $parseFail $reason $curTx $kcnt]
                   }
                 } else {
-                  # Special case of Coinbase Transaction. Check for block height. If the first Script byte is 0x3 
-                  # the next 3 bytes are the block height.
-                  move -$nscriptbytes
-                  if {$nscriptbytes > 3} {
-                    set bheight [uint8]
-                    if {$bheight == 3} { 
-                      # Fake the look of the other Decode sections. Ne need to actually parse the data.
-                      move -1
-                      section -collapsed "Decode" {
-                        uint8 "OP_PUSH"
-                        uint24 "height"
-                        if {$nscriptbytes > 4} {
-                          # Display the remaining bytes
-                          bytes [expr $nscriptbytes - 4] "<data>" 
-                        }
-                      }
-                    } else {
-                      # No height info. Just label the bytes as data
-                      move -1
-                      section -collapsed "Decode" {
-                        bytes $nscriptbytes "<data>"
-                      }
-                    }
-                  } else {
-                    section -collapsed "Decode" {
-                      bytes $nscriptbytes "<data>"
-                    }
-                  }
+                  # This code only gets executed only once. Move it out of mainline code.
+                  decodeCoinbase $nscriptbytes
                   set Coinbase 0
                   set iscb ""
                 }
