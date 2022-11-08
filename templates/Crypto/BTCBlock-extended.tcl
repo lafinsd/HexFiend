@@ -713,11 +713,14 @@ proc showSpecial {type len label} {
 # ***********************************************************************************************************************
 # ***********************************************************************************************************************
 
-
 set nullstr ""
 set exitMsgs {}
 set ALLDONE 0
 set szFile [len]
+
+entry "BTCBlock-extended V 1.0" $nullstr
+entry $nullstr $nullstr
+entry $nullstr $nullstr
 
 if $XTND_SS {
   entry "ON: ScriptSig extended decoding" $nullstr
@@ -811,17 +814,6 @@ section -collapsed "TRANSACTIONS"  {
               continue
             }
             if {$nscriptbytes > 0} {
-              # Check for block height. If it's the Coinbase transaction and the first Script byte 
-              # is 0x3 then the next 3 bytes are the block height.
-              if {$Coinbase && $nscriptbytes > 3} {
-                set bheight [uint8]
-                if {$bheight == 3} { 
-                  uint24 "height"
-                  move -3 
-                } 
-                # Move back to beginning of Script and start over.
-                move -1
-              }
               bytes $nscriptbytes "ScriptSig"
               if {$extendedVersion & $XTND_SS_MASK} {
                 # Process the Script if it's not the Coinbase input.
@@ -848,8 +840,36 @@ section -collapsed "TRANSACTIONS"  {
                     lappend exitMsgs [format "Opcode parse fail (%d): %s  Tx=%d input=%d" $parseFail $reason $curTx $kcnt]
                   }
                 } else {
-                    set Coinbase 0
-                    set iscb ""
+                  # Special case of Coinbase Transaction. Check for block height. If the first Script byte is 0x3 
+                  # the next 3 bytes are the block height.
+                  move -$nscriptbytes
+                  if {$nscriptbytes > 3} {
+                    set bheight [uint8]
+                    if {$bheight == 3} { 
+                      # Fake the look of the other Decode sections. Ne need to actually parse the data.
+                      move -1
+                      section -collapsed "Decode" {
+                        uint8 "OP_PUSH"
+                        uint24 "height"
+                        if {$nscriptbytes > 4} {
+                          # Display the remaining bytes
+                          bytes [expr $nscriptbytes - 4] "<data>" 
+                        }
+                      }
+                    } else {
+                      # No height info. Just label the bytes as data
+                      move -1
+                      section -collapsed "Decode" {
+                        bytes $nscriptbytes "<data>"
+                      }
+                    }
+                  } else {
+                    section -collapsed "Decode" {
+                      bytes $nscriptbytes "<data>"
+                    }
+                  }
+                  set Coinbase 0
+                  set iscb ""
                 }
               } else {   ;  # (extendedVersion & XTND_SS_MASK) != 0
                 set Coinbase 0
