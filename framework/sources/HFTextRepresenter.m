@@ -287,9 +287,6 @@
     if (bits & (HFControllerEditable)) {
         [(HFRepresenterTextView *)[self view] setEditable:[[self controller] editable]];
     }
-    if (bits & (HFControllerAntialias)) {
-        [(HFRepresenterTextView *)[self view] setShouldAntialias:[[self controller] shouldAntialias]];
-    }
     if (bits & (HFControllerShowCallouts)) {
         [(HFRepresenterTextView *)[self view] setShouldDrawCallouts:[[self controller] shouldShowCallouts]];
     }
@@ -313,6 +310,13 @@
     }
     if (bits & (HFControllerColorRanges)) {
         [(HFRepresenterTextView *)[self view] updateSelectedRanges];
+#if TARGET_OS_IPHONE
+        [[self view] setNeedsDisplay];
+#else
+        [[self view] setNeedsDisplay:YES];
+#endif
+    }
+    if ((bits & HFControllerByteTheme) || (bits & HFControllerInactiveSelectionColorMatchesActive)) {
 #if TARGET_OS_IPHONE
         [[self view] setNeedsDisplay];
 #else
