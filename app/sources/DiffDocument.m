@@ -10,7 +10,6 @@
 #import "DataInspectorRepresenter.h"
 #import "HFDocumentOperationView.h"
 #import "DiffTextViewContainer.h"
-#import "TextDividerRepresenter.h"
 #import "HFBinaryTemplateRepresenter.h"
 #import <HexFiend/HexFiend.h>
 
@@ -389,7 +388,7 @@ static enum DiffOverlayViewRangeType_t rangeTypeForValue(CGFloat value) {
         leftScrollRepresenter = [[HFVerticalScrollerRepresenter alloc] init];
         leftStatusBarRepresenter = [[HFStatusBarRepresenter alloc] init];
         leftDataInspectorRepresenter = [[DataInspectorRepresenter alloc] init];
-        leftTextDividerRepresenter = [[TextDividerRepresenter alloc] init];
+        leftTextDividerRepresenter = [[HFTextDividerRepresenter alloc] init];
         leftBinaryTemplateRepresenter = [[HFBinaryTemplateRepresenter alloc] init];
         leftBinaryTemplateRepresenter.viewWidth = [NSUserDefaults.standardUserDefaults doubleForKey:@"BinaryTemplateRepresenterWidth"];
         
@@ -406,7 +405,7 @@ static enum DiffOverlayViewRangeType_t rangeTypeForValue(CGFloat value) {
         [allRepresenters setObject:leftBinaryTemplateRepresenter forKey:[leftBinaryTemplateRepresenter className]];
         
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
-        [center addObserver:self selector:@selector(leftLineCountingViewChangedWidth:) name:HFLineCountingRepresenterMinimumViewWidthChanged object:leftLineCountingRepresenter];
+        [center addObserver:self selector:@selector(lineCountingViewChangedWidth:) name:HFLineCountingRepresenterMinimumViewWidthChanged object:leftLineCountingRepresenter];
         [center addObserver:self selector:@selector(columnRepresenterViewHeightChanged:) name:HFColumnRepresenterViewHeightChanged object:leftColumnRepresenter];
         [center addObserver:self selector:@selector(lineCountingRepCycledLineNumberFormat:) name:HFLineCountingRepresenterCycledLineNumberFormat object:leftLineCountingRepresenter];
         [center addObserver:self selector:@selector(dataInspectorChangedRowCount:) name:DataInspectorDidChangeRowCount object:leftDataInspectorRepresenter];
@@ -414,8 +413,8 @@ static enum DiffOverlayViewRangeType_t rangeTypeForValue(CGFloat value) {
         
         NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
         
-        leftLineCountingRepresenter.lineNumberFormat = (HFLineNumberFormat)[defs integerForKey:@"LineNumberFormat"];
-        [leftColumnRepresenter setLineCountingWidth:leftLineCountingRepresenter.preferredWidth];
+        lineCountingRepresenter.lineNumberFormat = (HFLineNumberFormat)[defs integerForKey:@"LineNumberFormat"];
+        [columnRepresenter setLineCountingWidth:lineCountingRepresenter.preferredWidth];
     }
     return self;
 }
@@ -454,9 +453,6 @@ static enum DiffOverlayViewRangeType_t rangeTypeForValue(CGFloat value) {
     }
     if (propertyMask & HFControllerFont) {
         [client setFont:[controller font]];
-    }
-    if (propertyMask & HFControllerByteTheme) {
-        [client setByteTheme:[controller byteTheme]];
     }
 }
 
@@ -727,8 +723,15 @@ static enum DiffOverlayViewRangeType_t rangeTypeForValue(CGFloat value) {
     
     [leftBytes incrementChangeLockCounter];
     [rightBytes incrementChangeLockCounter];
+    NSUserDefaults *userDefaults = NSUserDefaults.standardUserDefaults;
+    BOOL onlyReplace = [userDefaults boolForKey:@"OnlyReplaceInComparison"];
+    BOOL skipOneByteMatches = [userDefaults boolForKey:@"SkipOneByteMatches"];
     [diffComputationView startOperation:^id(HFProgressTracker *tracker) {
-        return [[HFByteArrayEditScript alloc] initWithDifferenceFromSource:self->leftBytes toDestination:self->rightBytes trackingProgress:tracker];
+        return [[HFByteArrayEditScript alloc] initWithDifferenceFromSource:self->leftBytes
+                                                             toDestination:self->rightBytes
+                                                               onlyReplace:onlyReplace
+                                                        skipOneByteMatches:skipOneByteMatches
+                                                          trackingProgress:tracker];
     } completionHandler:^(id script) {
         [self->leftBytes decrementChangeLockCounter];
         [self->rightBytes decrementChangeLockCounter];
@@ -1222,12 +1225,6 @@ static const CGFloat kScrollMultiplier = (CGFloat)1.5;
     return view;
 }
 
-- (void)leftLineCountingViewChangedWidth:(NSNotification *)note {
-    HFLineCountingRepresenter *rep = note.object;
-    HFASSERT(rep == leftLineCountingRepresenter);
-    [self lineCountingRepChangedWidth:rep associatedColumnRep:leftColumnRepresenter];
-}
-
 #pragma mark Set representer properties (override BaseDocument)
 - (void)setStringEncoding:(HFStringEncoding *)encoding {
     [(HFStringEncodingTextRepresenter *)leftAsciiRepresenter setEncoding:encoding];
@@ -1247,9 +1244,8 @@ static const CGFloat kScrollMultiplier = (CGFloat)1.5;
     return [super setByteGrouping:newBytesPerColumn];
 }
 
-- (void)setByteTheme:(HFByteTheme *)byteTheme {
-    [super setByteTheme:byteTheme];
-    leftTextView.controller.byteTheme = byteTheme;
+- (BOOL)shouldSaveWindowState {
+    return NO;
 }
 
 @end

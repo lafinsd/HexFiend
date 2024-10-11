@@ -516,11 +516,9 @@ enum LineCoverage_t {
 }
 
 - (NSColor *)caretColor {
-#if defined(MAC_OS_VERSION_14_0) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_VERSION_14_0
     if (@available(macOS 14, *)) {
         return NSColor.textInsertionPointColor;
     }
-#endif
     return HFColor.labelColor;
 }
 
@@ -658,9 +656,7 @@ enum LineCoverage_t {
 }
 
 - (void)commonInit {
-#if defined(MAC_OS_VERSION_14_0) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_VERSION_14_0
     self.clipsToBounds = YES;
-#endif
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -2072,6 +2068,10 @@ static size_t unionAndCleanLists(CGRect *rectList, __unsafe_unretained id *value
 }
 
 - (void)scrollWheel:(NSEvent *)event {
+    if (self.enclosingScrollView) {
+        [super scrollWheel:event];
+        return;
+    }
     [[self representer] scrollWheel:event];
 }
 #endif
